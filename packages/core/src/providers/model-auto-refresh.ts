@@ -10,6 +10,7 @@ import {
   type ProviderModelMetadata
 } from "@ccr/core/contracts/app";
 import { codexDefaultBaseUrl, readCodexLocalModelCatalog } from "@ccr/core/agents/local-providers/codex";
+import { sameLocalAgentConfigDir } from "@ccr/core/agents/local-providers/source";
 import { localAgentProviderApiKey } from "@ccr/core/agents/local-providers/shared";
 import { modelRegistryForConfig, parseProviderModelSelector, providerRuntimeId } from "@ccr/core/routing/model-registry";
 import { probeGatewayProvider } from "@ccr/core/providers/probe";
@@ -447,10 +448,23 @@ const gatewayProviderProtocols = new Set<GatewayProviderProtocol>([
 ]);
 
 function providerPluginsForModelRefresh(config: AppConfig, provider: GatewayProviderConfig): unknown[] {
-  return (config.providerPlugins ?? []).filter((plugin) =>
-    providerPluginEnabled(plugin) &&
-    localAgentProviderPluginMatches(plugin, provider)
-  );
+  const matchingPlugins = (config.providerPlugins ?? [])
+    .filter((plugin) => localAgentProviderPluginMatches(plugin, provider));
+  const enabledPlugins = matchingPlugins
+    .filter(providerPluginEnabled)
+    .map((plugin) => providerPluginWithLocalAgentSource(plugin, provider));
+  if (matchingPlugins.length > 0 || !provider.localAgent) {
+    return enabledPlugins;
+  }
+
+  return [{
+    ...(provider.localAgent.kind === "codex"
+      ? { codexOauth: { required: true } }
+      : {}),
+    key: `ccr-local-agent-model-refresh-${provider.localAgent.kind}-oauth`,
+    localAgent: provider.localAgent,
+    providerName: provider.name
+  }];
 }
 
 function localAgentProviderPluginMatches(plugin: unknown, provider: GatewayProviderConfig): boolean {
@@ -464,6 +478,71 @@ function localAgentProviderPluginMatches(plugin: unknown, provider: GatewayProvi
 
   const pluginProviderName = readString(plugin.providerName) || readString(plugin.provider);
   return Boolean(pluginProviderName && providerPluginAliases(provider).has(pluginProviderName.trim().toLowerCase()));
+}
+
+function providerPluginWithLocalAgentSource(
+  plugin: unknown,
+  provider: GatewayProviderConfig
+): unknown {
+  if (!isRecord(plugin) || !provider.localAgent) {
+    return plugin;
+  }
+  const key = readString(plugin.key)?.toLowerCase() ?? "";
+  const kind = provider.localAgent.kind;
+  const expectedSuffix = kind === "codex" ? "-codex-oauth" : "-claude-code-oauth";
+  if (!key.includes(expectedSuffix)) {
+    return plugin;
+  }
+
+  const pluginLocalAgent = isRecord(plugin.localAgent) ? plugin.localAgent : undefined;
+  if (
+    readString(pluginLocalAgent?.kind) === kind &&
+    sameLocalAgentConfigDir(
+      readString(pluginLocalAgent?.configDir),
+      provider.localAgent.configDir
+    )
+  ) {
+    return plugin;
+  }
+
+  const nextPlugin: Record<string, unknown> = {
+    ...plugin,
+    localAgent: provider.localAgent
+  };
+  if (kind === "codex" && isRecord(plugin.codexOauth)) {
+    nextPlugin.codexOauth = withoutCaseInsensitiveKeys(plugin.codexOauth, [
+      "accessToken",
+      "access_token",
+      "accountId",
+      "account_id",
+      "refreshToken",
+      "refresh_token"
+    ]);
+  }
+  const auth = isRecord(plugin.auth) ? plugin.auth : undefined;
+  const headers = isRecord(auth?.headers) ? auth.headers : undefined;
+  if (auth && headers) {
+    nextPlugin.auth = {
+      ...auth,
+      headers: withoutCaseInsensitiveKeys(
+        headers,
+        kind === "codex"
+          ? ["authorization", "ChatGPT-Account-Id", "X-OpenAI-Fedramp"]
+          : ["authorization"]
+      )
+    };
+  }
+  return nextPlugin;
+}
+
+function withoutCaseInsensitiveKeys(
+  record: Record<string, unknown>,
+  keys: string[]
+): Record<string, unknown> {
+  const normalizedKeys = new Set(keys.map((key) => key.toLowerCase()));
+  return Object.fromEntries(
+    Object.entries(record).filter(([key]) => !normalizedKeys.has(key.toLowerCase()))
+  );
 }
 
 function providerPluginEnabled(plugin: unknown): boolean {
@@ -483,7 +562,11 @@ function providerPluginAliases(provider: GatewayProviderConfig): Set<string> {
 
 function localProviderModelCatalogSnapshot(provider: GatewayProviderConfig): ProviderModelCatalogSnapshot | undefined {
   if (isLocalCodexProvider(provider)) {
-    return readCodexLocalModelCatalog();
+    return readCodexLocalModelCatalog(
+      provider.localAgent?.kind === "codex"
+        ? provider.localAgent.configDir
+        : undefined
+    );
   }
   return undefined;
 }

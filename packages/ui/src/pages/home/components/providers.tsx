@@ -12,16 +12,16 @@ import {
   providerAccountConnectorsTextWithNewApiUserBalanceTemplate, providerAccountSnapshotCredentialLabel, providerAccountSnapshotLabel, ProviderAccountTestPath,
   ProviderAccountTestResult, providerBaseUrl, providerCapabilitiesSummary, ProviderCredentialDraft, ProviderDeepLinkPayload, ProviderDeepLinkRequest, providerDraftSafetyIssue, providerCredentialDraftPatchFromJson, providerHttpJsonConnectorFromDraft,
   providerBrowserConnectorFromDraft, providerBrowserCredentialsOptions,
-  ProviderConnectivityCheckReport, providerCapabilityBaseUrlForProtocol, providerConnectivityApiKeyFromDraft, providerDeepLinkDisplayIcon, providerDraftHasReadyCredentialPool, providerListItemKey, providerMatchesQuery, ProviderPreset, providerPresetIconUrls, providerProbeHasSupportedProtocol,
+  ProviderConnectivityCheckReport, providerApiKey, providerCapabilityBaseUrlForProtocol, providerConnectivityApiKeyFromDraft, providerDeepLinkDisplayIcon, providerDraftHasReadyCredentialPool, providerListItemKey, providerMatchesQuery, ProviderPreset, providerPresetIconUrls, providerProbeHasSupportedProtocol,
   providerDisplayIcon, providerGlobalBaseUrlForProbe, providerModelDisplayName, providerModelDisplayTitle, providerProtocolOptions, providerSelectableProtocolsFromProbe, providerUsageFieldPatch, ProviderUsageFieldTarget, providerUsageMethodOptions, Search, SelectControl,
   RefreshCw, resolveProviderDeepLinkPreset, ShieldCheck, splitLines, Switch, Tabs, TabsList, TabsTrigger, Textarea, Toggle, translatedProviderProtocolLabel, translateOptions,
-  translateProbeProtocolMessage, Trash2, uniqueProviderName, uniqueProviderProtocols, useAppErrorText, useAppText, useEffect, useLayoutEffect, useMemo,
+  sameLocalAgentConfigDirForComparison, translateProbeProtocolMessage, Trash2, uniqueProviderName, uniqueProviderProtocols, useAppErrorText, useAppText, useEffect, useLayoutEffect, useMemo,
   useRef, useState, X, isGatewayProviderEnabled, isPlainRecord
 } from "../shared/index";
 import { PopoverPortal } from "@/components/ui/popover";
 import { Tooltip, TooltipPortal } from "@/components/ui/tooltip";
 import { providerUrlWithDefaultScheme } from "@ccr/core/providers/url";
-import type { ChromeLoginImportJob, LocalAgentProviderCandidate, ProviderAccountHttpJsonConnectorConfig, ProviderAccountWebContentJsonConnectorConfig } from "@ccr/core/contracts/app";
+import type { ChromeLoginImportJob, LocalAgentProviderCandidate, LocalAgentProviderImportRequest, ProviderAccountHttpJsonConnectorConfig, ProviderAccountWebContentJsonConnectorConfig } from "@ccr/core/contracts/app";
 import type { ReactNode } from "react";
 
 const useClientLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
@@ -1366,12 +1366,65 @@ function providerNameMatchesGeneratedPresetName(name: string, baseName: string):
   return /^\d+$/.test(normalizedName.slice(normalizedBaseName.length + 1));
 }
 
+type ConfigurableLocalAgentProviderKind = "claude-code" | "codex";
+
+const configurableLocalAgentDefaultConfigDirs: Record<ConfigurableLocalAgentProviderKind, string> = {
+  "claude-code": "~/.claude",
+  codex: "~/.codex"
+};
+
+export function localAgentProviderConfigDirsAfterDiscovery(
+  current: Record<ConfigurableLocalAgentProviderKind, string>,
+  candidates: LocalAgentProviderCandidate[]
+): Record<ConfigurableLocalAgentProviderKind, string> {
+  return candidates.reduce((next, candidate) => {
+    if (
+      (candidate.kind !== "claude-code" && candidate.kind !== "codex") ||
+      !candidate.defaultConfigDir ||
+      current[candidate.kind] !== configurableLocalAgentDefaultConfigDirs[candidate.kind]
+    ) {
+      return next;
+    }
+    return {
+      ...next,
+      [candidate.kind]: candidate.defaultConfigDir
+    };
+  }, current);
+}
+
+function configurableLocalAgentKindForDraft(draft: AddProviderDraft): ConfigurableLocalAgentProviderKind | undefined {
+  if (draft.localAgent) {
+    return draft.localAgent.kind;
+  }
+  if (draft.apiKey.trim() !== localAgentProviderApiKey) {
+    return undefined;
+  }
+  if (draft.baseUrl.trim().replace(/\/+$/, "").toLowerCase() === "https://chatgpt.com/backend-api/codex") {
+    return "codex";
+  }
+  return draft.protocol === "anthropic_messages" ? "claude-code" : undefined;
+}
+
+function placeholderLocalAgentCandidate(kind: ConfigurableLocalAgentProviderKind): LocalAgentProviderCandidate {
+  return {
+    id: kind === "codex" ? "codex-api" : "claude-code-api",
+    importable: false,
+    kind,
+    models: [],
+    name: kind === "codex" ? "Codex API" : "Claude Code API",
+    protocol: kind === "codex" ? "openai_responses" : "anthropic_messages",
+    status: "missing"
+  };
+}
+
 function LocalAgentProviderImportPanel({
+  draft,
   mode,
   onChange,
   providerPlugins,
   providers
 }: {
+  draft: AddProviderDraft;
   mode: "add" | "edit";
   onChange: (patch: Partial<AddProviderDraft>, resetProbe?: boolean) => void;
   providerPlugins: unknown[];
@@ -1383,6 +1436,12 @@ function LocalAgentProviderImportPanel({
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [importingId, setImportingId] = useState("");
+  const [scanningKind, setScanningKind] = useState<ConfigurableLocalAgentProviderKind>();
+  const [configDirs, setConfigDirs] = useState<Record<ConfigurableLocalAgentProviderKind, string>>(() => ({
+    ...configurableLocalAgentDefaultConfigDirs,
+    ...(draft.localAgent ? { [draft.localAgent.kind]: draft.localAgent.configDir } : {})
+  }));
+  const editKind = mode === "edit" ? configurableLocalAgentKindForDraft(draft) : undefined;
 
   useEffect(() => {
     if (mode !== "add" || !window.ccr?.getLocalAgentProviderCandidates) {
@@ -1394,9 +1453,16 @@ function LocalAgentProviderImportPanel({
     void window.ccr.getLocalAgentProviderCandidates()
       .then((items) => {
         if (!cancelled) {
+          setConfigDirs((current) =>
+            localAgentProviderConfigDirsAfterDiscovery(current, items)
+          );
           setCandidates(items.filter((item) =>
-            item.status !== "missing" &&
-            !localAgentProviderAlreadyImported(item, providers, providerPlugins)
+            item.kind === "claude-code" ||
+            item.kind === "codex" ||
+            (
+              item.status !== "missing" &&
+              !localAgentProviderAlreadyImported(item, providers, providerPlugins)
+            )
           ));
         }
       })
@@ -1415,7 +1481,37 @@ function LocalAgentProviderImportPanel({
     };
   }, [mode, providerPlugins, providers]);
 
-  if (mode !== "add" || (candidates.length === 0 && !error)) {
+  async function scanConfigurableCandidate(kind: ConfigurableLocalAgentProviderKind) {
+    if (!window.ccr?.getLocalAgentProviderCandidates) {
+      return;
+    }
+    setScanningKind(kind);
+    setError("");
+    try {
+      const [candidate] = await window.ccr.getLocalAgentProviderCandidates({
+        configDir: configDirs[kind],
+        kind
+      });
+      if (candidate) {
+        setCandidates((current) => [
+          ...current.filter((item) => item.kind !== kind),
+          candidate
+        ]);
+      }
+    } catch (scanError) {
+      setError(formatError(scanError));
+    } finally {
+      setScanningKind(undefined);
+    }
+  }
+
+  const displayedCandidates = mode === "edit" && editKind
+    ? [candidates.find((candidate) => candidate.kind === editKind) ?? placeholderLocalAgentCandidate(editKind)]
+    : candidates;
+  if (
+    (mode === "edit" && !editKind) ||
+    (mode === "add" && displayedCandidates.length === 0 && !error)
+  ) {
     return null;
   }
 
@@ -1426,10 +1522,10 @@ function LocalAgentProviderImportPanel({
     setImportingId(candidate.id);
     setError("");
     try {
-      const result = await window.ccr.importLocalAgentProvider({
-        id: candidate.id,
-        providerNames: providers.map((provider) => provider.name)
-      });
+      const result = await window.ccr.importLocalAgentProvider(localAgentProviderImportRequest(
+        candidate,
+        mode === "edit" ? [] : providers.map((provider) => provider.name)
+      ));
       const accountDraft = createProviderAccountDraftFromConfig(result.provider.account);
       const protocol = result.provider.protocol ?? "openai_chat_completions";
       onChange({
@@ -1440,12 +1536,17 @@ function LocalAgentProviderImportPanel({
         credentialMode: "apiKey",
         credentials: [],
         icon: result.provider.icon?.trim() || localAgentProviderIconUrls[candidate.kind] || "",
+        localAgent: result.provider.localAgent,
         modelDescriptions: result.provider.modelDescriptions,
         modelDisplayNames: result.provider.modelDisplayNames,
         modelMetadata: result.provider.modelMetadata,
         modelSearch: "",
         modelsText: result.provider.models.join("\n"),
-        name: result.provider.name?.trim() || inferProviderNameFromBaseUrl(result.provider.baseUrl),
+        name: localAgentProviderImportedName(
+          mode,
+          draft.name,
+          result.provider.name?.trim() || inferProviderNameFromBaseUrl(result.provider.baseUrl)
+        ),
         presetId: customProviderPresetId,
         providerPlugins: result.providerPlugins,
         protocol,
@@ -1469,11 +1570,20 @@ function LocalAgentProviderImportPanel({
         {loading ? <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" /> : null}
       </div>
 
-      {candidates.length > 0 ? (
+      {displayedCandidates.length > 0 ? (
         <div className="grid grid-cols-1 gap-2">
-          {candidates.map((candidate) => {
+          {displayedCandidates.map((candidate) => {
             const iconUrl = localAgentProviderIconUrls[candidate.kind];
             const importing = importingId === candidate.id;
+            const configurableKind = candidate.kind === "claude-code" || candidate.kind === "codex"
+              ? candidate.kind
+              : undefined;
+            const scanning = configurableKind && scanningKind === configurableKind;
+            const alreadyImported = localAgentProviderAlreadyImported(
+              candidate,
+              providers,
+              providerPlugins
+            );
             return (
               <div
                 className="grid min-h-12 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-border bg-background px-2.5 py-2"
@@ -1493,14 +1603,47 @@ function LocalAgentProviderImportPanel({
                     <div className="mt-0.5 truncate text-[10px] text-muted-foreground" title={candidate.sourceFile || candidate.detail}>
                       {candidate.detail ? t(candidate.detail) : candidate.sourceFile || t("No local login state was found for this agent.")}
                     </div>
+                    {configurableKind ? (
+                      <div className="mt-2 flex min-w-0 items-end gap-2">
+                        <Field className="min-w-0 flex-1" label={t("Configuration directory")}>
+                          <Input
+                            aria-label={t("Configuration directory")}
+                            disabled={Boolean(scanningKind) || Boolean(importingId)}
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              setConfigDirs((current) => ({
+                                ...current,
+                                [configurableKind]: value
+                              }));
+                              setCandidates((current) => [
+                                ...current.filter((item) => item.kind !== configurableKind),
+                                placeholderLocalAgentCandidate(configurableKind)
+                              ]);
+                            }}
+                            placeholder={configurableLocalAgentDefaultConfigDirs[configurableKind]}
+                            value={configDirs[configurableKind]}
+                          />
+                        </Field>
+                        <Button
+                          className="h-8 shrink-0 px-2"
+                          disabled={!configDirs[configurableKind].trim() || Boolean(scanningKind) || Boolean(importingId)}
+                          onClick={() => void scanConfigurableCandidate(configurableKind)}
+                          type="button"
+                          variant="outline"
+                        >
+                          {scanning ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                          {t("Scan")}
+                        </Button>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
                 <Button
                   className="h-8 px-2"
-                  disabled={!candidate.importable || Boolean(importingId)}
+                  disabled={!candidate.importable || alreadyImported || Boolean(importingId)}
                   onClick={() => void importCandidate(candidate)}
                   type="button"
-                  variant={candidate.importable ? "default" : "outline"}
+                  variant={candidate.importable && !alreadyImported ? "default" : "outline"}
                 >
                   <AnimatedIconSwap iconKey={importing ? "importing" : "import"}>
                     {importing ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
@@ -1528,6 +1671,29 @@ function LocalAgentProviderImportPanel({
 }
 
 const localAgentProviderApiKey = "ccr-local-agent-login";
+
+export function localAgentProviderImportedName(
+  mode: "add" | "edit",
+  currentName: string,
+  importedName: string
+): string {
+  return mode === "edit" ? currentName : importedName;
+}
+
+export function localAgentProviderImportRequest(
+  candidate: LocalAgentProviderCandidate,
+  providerNames: string[]
+): LocalAgentProviderImportRequest {
+  const selectedConfigDir = candidate.localAgent?.kind === candidate.kind
+    ? candidate.localAgent.configDir.trim() || undefined
+    : undefined;
+  return {
+    ...(selectedConfigDir ? { configDir: selectedConfigDir } : {}),
+    id: candidate.id,
+    providerNames
+  };
+}
+
 const localAgentProviderPluginSuffixes: Record<Exclude<LocalAgentProviderCandidate["kind"], "opencode">, string[]> = {
   "claude-code": ["-claude-code-oauth", "-claude-code-oauth-internal"],
   codex: ["-codex-oauth", "-codex-oauth-internal"],
@@ -1544,17 +1710,38 @@ function localAgentProviderPluginSuffixesForCandidate(candidate: LocalAgentProvi
   return localAgentProviderPluginSuffixes[candidate.kind];
 }
 
-function localAgentProviderAlreadyImported(
+export function localAgentProviderAlreadyImported(
   candidate: LocalAgentProviderCandidate,
   providers: GatewayProviderConfig[],
   providerPlugins: unknown[]
 ): boolean {
-  const suffixes = localAgentProviderPluginSuffixesForCandidate(candidate);
-  const localProviderNames = new Set(providers
-    .filter((provider) => provider.api_key === localAgentProviderApiKey)
+  const candidateSource = candidate.localAgent;
+  const matchingProviders = providers.filter((provider) => {
+    if (providerApiKey(provider) !== localAgentProviderApiKey) {
+      return false;
+    }
+    if (!candidateSource) {
+      return !provider.localAgent || Boolean(
+        candidate.defaultConfigDir &&
+        provider.localAgent.kind === candidate.kind &&
+        sameLocalAgentConfigDirForComparison(
+          provider.localAgent.configDir,
+          candidate.defaultConfigDir
+        )
+      );
+    }
+    return provider.localAgent?.kind === candidateSource.kind &&
+      sameLocalAgentConfigDirForComparison(
+        provider.localAgent.configDir,
+        candidateSource.configDir
+      );
+  });
+  const localProviderNames = new Set(matchingProviders
     .flatMap((provider) => [
       provider.name,
-      provider.type ? `${provider.name}::${provider.type}` : ""
+      provider.id ?? "",
+      provider.type ? `${provider.name}::${provider.type}` : "",
+      provider.id && provider.type ? `${provider.id}::${provider.type}` : ""
     ])
     .map((name) => name.trim().toLowerCase())
     .filter(Boolean));
@@ -1562,22 +1749,20 @@ function localAgentProviderAlreadyImported(
     return false;
   }
 
-  const candidateProviderExists = providers.some((provider) =>
-    provider.api_key === localAgentProviderApiKey &&
-    provider.name.trim().toLowerCase().startsWith(candidate.name.toLowerCase())
-  );
-  if (candidateProviderExists) {
-    return true;
-  }
-
+  const suffixes = localAgentProviderPluginSuffixesForCandidate(candidate);
   return providerPlugins.some((plugin) => {
-    const key = isPlainRecord(plugin) && typeof plugin.key === "string" ? plugin.key : "";
-    const providerName = isPlainRecord(plugin) && typeof plugin.providerName === "string" ? plugin.providerName : "";
-    return (
-      key.startsWith("ccr-local-agent-") &&
+    if (!isPlainRecord(plugin)) {
+      return false;
+    }
+    const key = typeof plugin.key === "string" ? plugin.key : "";
+    const providerName = typeof plugin.providerName === "string"
+      ? plugin.providerName
+      : typeof plugin.provider === "string"
+        ? plugin.provider
+        : "";
+    return key.startsWith("ccr-local-agent-") &&
       suffixes.some((suffix) => key.endsWith(suffix)) &&
-      localProviderNames.has(providerName.trim().toLowerCase())
-    );
+      localProviderNames.has(providerName.trim().toLowerCase());
   });
 }
 
@@ -2256,6 +2441,7 @@ export function AddProviderForm({
             ) : (
               <>
                 <LocalAgentProviderImportPanel
+                  draft={draft}
                   mode={mode}
                   onChange={onChange}
                   providerPlugins={localAgentProviderPlugins}

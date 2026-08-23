@@ -17,6 +17,7 @@ import type {
   GatewayProviderProbeResult,
   GatewayProviderProtocol,
   LocalAgentProviderKind,
+  LocalAgentProviderProbeRequest,
   ProviderAccountConfig,
   ProviderAccountConnectorConfig,
   ProviderAccountHttpJsonConnectorConfig,
@@ -72,6 +73,51 @@ export const localAgentProviderIconUrls: Record<LocalAgentProviderKind, string> 
 };
 
 const localAgentProviderApiKeyValue = "ccr-local-agent-login";
+const localAgentProviderEndpointByKind = {
+  "claude-code": "https://api.anthropic.com",
+  codex: "https://chatgpt.com/backend-api/codex"
+} as const;
+const localAgentProviderProtocolByKind = {
+  "claude-code": "anthropic_messages",
+  codex: "openai_responses"
+} as const;
+
+export function normalizeLocalAgentConfigDirForComparison(configDir: string): string {
+  const input = configDir.trim().normalize("NFC");
+  const windowsPath = /^[a-zA-Z]:[\\/]/.test(input) || input.startsWith("\\\\");
+  const value = windowsPath ? input.replaceAll("\\", "/") : input;
+  const drive = windowsPath ? /^[a-zA-Z]:\//.exec(value)?.[0] : undefined;
+  const unc = windowsPath && value.startsWith("//");
+  const prefix = drive ?? (unc ? "//" : value.startsWith("/") ? "/" : "");
+  const protectedSegments = unc ? 2 : 0;
+  const segments: string[] = [];
+  for (const segment of value.slice(prefix.length).split("/")) {
+    if (!segment || segment === ".") {
+      continue;
+    }
+    if (segment === "..") {
+      if (
+        segments.length > protectedSegments &&
+        segments.at(-1) !== ".."
+      ) {
+        segments.pop();
+      } else if (!prefix) {
+        segments.push(segment);
+      }
+      continue;
+    }
+    segments.push(segment);
+  }
+  return `${prefix}${segments.join("/")}`;
+}
+
+export function sameLocalAgentConfigDirForComparison(
+  left: string,
+  right: string
+): boolean {
+  return normalizeLocalAgentConfigDirForComparison(left) ===
+    normalizeLocalAgentConfigDirForComparison(right);
+}
 
 export function createModelCatalogItems(config: AppConfig): ModelCatalogItem[] {
   const rows: ModelCatalogItem[] = [];
@@ -776,6 +822,7 @@ export function createProviderDraftFromProvider(provider: GatewayProviderConfig)
     credentialMode: providerDraftHasReadyCredentialPool({ credentials }) ? "pool" : "apiKey",
     credentials,
     icon: provider.icon ?? "",
+    localAgent: provider.localAgent,
     modelDescriptions: modelDescriptionsForModels(provider.modelDescriptions, provider.models),
     modelDisplayNames: modelDisplayNamesForModels(
       mergeModelDisplayNames(providerPresetModelDisplayNames(preset), provider.modelDisplayNames),
@@ -794,6 +841,34 @@ export function createProviderDraftFromProvider(provider: GatewayProviderConfig)
   };
 }
 
+export function providerLocalAgentConfigForSave(
+  draft: AddProviderDraft
+): AddProviderDraft["localAgent"] {
+  const source = draft.localAgent;
+  if (!source || providerConnectivityApiKeyFromDraft(draft) !== localAgentProviderApiKeyValue) {
+    return undefined;
+  }
+  const selectedProtocols = uniqueProviderProtocols(draft.selectedProtocols);
+  const protocol = selectedProtocols.includes(draft.protocol)
+    ? draft.protocol
+    : selectedProtocols[0] ?? draft.protocol;
+  return normalizeProviderBaseUrl(draft.baseUrl) === normalizeProviderBaseUrl(localAgentProviderEndpointByKind[source.kind]) &&
+    protocol === localAgentProviderProtocolByKind[source.kind]
+    ? source
+    : undefined;
+}
+
+export function localCodexProviderProbeRequestForDraft(
+  draft: AddProviderDraft,
+  forceRefresh = false
+): LocalAgentProviderProbeRequest {
+  return {
+    ...(draft.localAgent?.kind === "codex" ? { configDir: draft.localAgent.configDir } : {}),
+    ...(forceRefresh ? { forceRefresh: true } : {}),
+    id: "codex-api"
+  };
+}
+
 export function providerConnectivityProviderPlugins(
   draft: AddProviderDraft,
   providerPlugins: unknown[] | undefined,
@@ -807,9 +882,76 @@ export function providerConnectivityProviderPlugins(
   }
 
   const names = localAgentProviderPluginNamesForDraft(draft, existingProvider);
-  return (providerPlugins ?? []).filter((plugin) =>
-    providerPluginEnabled(plugin) &&
-    localAgentProviderPluginMatchesNames(plugin, names)
+  return (providerPlugins ?? [])
+    .filter((plugin) =>
+      providerPluginEnabled(plugin) &&
+      localAgentProviderPluginMatchesNames(plugin, names)
+    )
+    .map((plugin) => reconcileLocalAgentConnectivityPluginSource(plugin, draft.localAgent));
+}
+
+function reconcileLocalAgentConnectivityPluginSource(
+  plugin: unknown,
+  source: AddProviderDraft["localAgent"]
+): unknown {
+  if (!isPlainRecord(plugin)) {
+    return plugin;
+  }
+
+  const pluginSource = isPlainRecord(plugin.localAgent)
+    ? plugin.localAgent
+    : undefined;
+  const sourceIsLocalAgent = source?.kind === "claude-code" || source?.kind === "codex";
+  const pluginSourceIsLocalAgent = pluginSource?.kind === "claude-code" || pluginSource?.kind === "codex";
+  if (!sourceIsLocalAgent && !pluginSourceIsLocalAgent) {
+    return plugin;
+  }
+  if (
+    sourceIsLocalAgent &&
+    pluginSource?.kind === source.kind &&
+    typeof pluginSource.configDir === "string" &&
+    sameLocalAgentConfigDirForComparison(pluginSource.configDir, source.configDir)
+  ) {
+    return plugin;
+  }
+
+  const nextPlugin: Record<string, unknown> = { ...plugin };
+  if (sourceIsLocalAgent) {
+    nextPlugin.localAgent = source;
+  } else {
+    delete nextPlugin.localAgent;
+  }
+
+  if (isPlainRecord(plugin.codexOauth)) {
+    nextPlugin.codexOauth = withoutCaseInsensitiveKeys(plugin.codexOauth, [
+      "accessToken",
+      "access_token",
+      "accountId",
+      "account_id",
+      "refreshToken",
+      "refresh_token"
+    ]);
+  }
+  if (isPlainRecord(plugin.auth) && isPlainRecord(plugin.auth.headers)) {
+    nextPlugin.auth = {
+      ...plugin.auth,
+      headers: withoutCaseInsensitiveKeys(plugin.auth.headers, [
+        "authorization",
+        "ChatGPT-Account-Id",
+        "X-OpenAI-Fedramp"
+      ])
+    };
+  }
+  return nextPlugin;
+}
+
+function withoutCaseInsensitiveKeys(
+  record: Record<string, unknown>,
+  keys: string[]
+): Record<string, unknown> {
+  const normalizedKeys = new Set(keys.map((key) => key.toLowerCase()));
+  return Object.fromEntries(
+    Object.entries(record).filter(([key]) => !normalizedKeys.has(key.toLowerCase()))
   );
 }
 
@@ -823,6 +965,67 @@ export function removeLocalAgentProviderPluginsForProvider(
 
   const names = localAgentProviderPluginNamesForProvider(provider);
   return (current ?? []).filter((plugin) => !localAgentProviderPluginMatchesNames(plugin, names));
+}
+
+function providerUsesLocalAgentCredential(
+  provider: GatewayProviderConfig | undefined
+): boolean {
+  return Boolean(
+    provider && (
+      providerApiKey(provider) === localAgentProviderApiKeyValue ||
+      provider.credentials?.some(
+        (credential) =>
+          (credential.api_key || credential.apiKey || credential.apikey) ===
+          localAgentProviderApiKeyValue
+      )
+    )
+  );
+}
+
+function providerLocalAgentAuthenticationKind(
+  provider: GatewayProviderConfig | undefined
+): "claude-code" | "codex" | undefined {
+  if (!provider || !providerUsesLocalAgentCredential(provider)) {
+    return undefined;
+  }
+  const protocol = toProviderProtocol(provider.type) ?? toProviderProtocol(provider.provider);
+  const baseUrl = normalizeProviderBaseUrl(providerBaseUrl(provider));
+  const kinds = provider.localAgent
+    ? [provider.localAgent.kind]
+    : (["claude-code", "codex"] as const);
+  return kinds.find(
+    (kind) =>
+      protocol === localAgentProviderProtocolByKind[kind] &&
+      baseUrl === normalizeProviderBaseUrl(localAgentProviderEndpointByKind[kind])
+  );
+}
+
+export function mergeProviderPluginsForSave(
+  current: unknown[] | undefined,
+  additions: unknown[],
+  replacedProvider?: GatewayProviderConfig,
+  savedProvider?: GatewayProviderConfig
+): unknown[] | undefined {
+  const withoutReplacedProvider = removeLocalAgentProviderPluginsForProvider(current, replacedProvider);
+  if (additions.length === 0) {
+    const replacedKind = providerLocalAgentAuthenticationKind(replacedProvider);
+    return replacedKind && replacedKind === providerLocalAgentAuthenticationKind(savedProvider)
+      ? current
+      : withoutReplacedProvider;
+  }
+
+  const addedKeys = new Set(additions.map(providerPluginConfigKey).filter((key): key is string => Boolean(key)));
+  const retained = (withoutReplacedProvider ?? []).filter((plugin) => {
+    const key = providerPluginConfigKey(plugin);
+    return !key || !addedKeys.has(key);
+  });
+  return [...retained, ...additions];
+}
+
+function providerPluginConfigKey(value: unknown): string | undefined {
+  return isPlainRecord(value) && typeof value.key === "string" && value.key.trim()
+    ? value.key.trim()
+    : undefined;
 }
 
 function localAgentProviderPluginNamesForDraft(

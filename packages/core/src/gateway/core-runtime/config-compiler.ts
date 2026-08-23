@@ -18,6 +18,7 @@ import { billingUsageSyncHeader, billingUsageSyncPath, claudeCodeOauthBetaHeader
 import type { BrowserWebSearchMcpIntegration, CoreGatewayProvider } from "@ccr/core/gateway/internal/shared";
 import { uniqueStrings } from "@ccr/core/gateway/internal/collections";
 import { isLocalClaudeCodeOauthProviderPlugin, mergeAnthropicBetaValues } from "@ccr/core/providers/oauth-plugin";
+import { normalizeLocalAgentConfigDir, sameLocalAgentConfigDir } from "@ccr/core/agents/local-providers/source";
 import { isLocalAgentOauthProviderPlugin } from "@ccr/core/gateway/core-runtime/local-agent-auth-provider-hook";
 import { resolveConfiguredProviderModelSelector, resolveUniqueConfiguredProviderModelSelector } from "@ccr/core/routing/model-resolution";
 
@@ -43,21 +44,35 @@ export async function compileCoreGatewayConfig(
       )
     : [];
   const pluginBillingConfig = isRecord(pluginCoreGatewayConfig.billing) ? pluginCoreGatewayConfig.billing : {};
-  const allConfiguredProviderPlugins = normalizeClaudeCodeOauthProviderPlugins([
-    ...(config.providerPlugins ?? []),
-    ...pluginService.getCoreProviderPlugins()
-  ]);
+  const enabledProviders = config.Providers.filter(isGatewayProviderEnabled);
+  const allConfiguredProviderPlugins = withLocalAgentProviderSources(
+    normalizeClaudeCodeOauthProviderPlugins([
+      ...(config.providerPlugins ?? []),
+      ...pluginService.getCoreProviderPlugins()
+    ]),
+    enabledProviders
+  );
   const configuredProviderPlugins = allConfiguredProviderPlugins.filter(providerPluginEnabled);
+  const readCodexAuthForCompile = memoizeLocalAgentCredentialRead(readCodexAuth);
+  const readClaudeCodeOauthForCompile = memoizeLocalAgentCredentialRead(readClaudeCodeOauth);
   const configuredProviderPluginsWithLocalCodexFallbacks = withMissingCodexOauthProviderPlugins(
     configuredProviderPlugins,
     allConfiguredProviderPlugins,
-    config.Providers.filter(isGatewayProviderEnabled)
+    enabledProviders,
+    readCodexAuthForCompile
   );
   const providerPluginsWithRuntimeDefaults = await withKimiOauthRuntimeDefaults(
-    await withGrokOauthRuntimeDefaults(withClaudeCodeOauthRuntimeDefaults(withCodexOauthRuntimeDefaults(configuredProviderPluginsWithLocalCodexFallbacks)))
+    await withGrokOauthRuntimeDefaults(
+      withClaudeCodeOauthRuntimeDefaults(
+        withCodexOauthRuntimeDefaults(
+          configuredProviderPluginsWithLocalCodexFallbacks,
+          readCodexAuthForCompile
+        ),
+        readClaudeCodeOauthForCompile
+      )
+    )
   );
   const codexOauthProviderNames = codexOauthLocalProviderNames(providerPluginsWithRuntimeDefaults);
-  const enabledProviders = config.Providers.filter(isGatewayProviderEnabled);
   const providerPlugins = normalizeCoreProviderPluginNames(providerPluginsWithRuntimeDefaults, enabledProviders);
   const providerPluginsWithCapabilityAliases = withProviderCapabilityPluginAliases(providerPlugins, enabledProviders);
   const virtualModelProfiles = coreGatewayVirtualModelProfiles(config);
@@ -214,6 +229,167 @@ function withProviderCapabilityPluginAliases(
 }
 
 
+function withLocalAgentProviderSources(
+  providerPlugins: unknown[],
+  providers: GatewayProviderConfig[]
+): unknown[] {
+  return providerPlugins.map((plugin) => {
+    if (!isRecord(plugin)) {
+      return plugin;
+    }
+    const kind = isLocalCodexOauthProviderPlugin(plugin)
+      ? "codex"
+      : isLocalClaudeCodeOauthProviderPlugin(plugin)
+        ? "claude-code"
+        : undefined;
+    const providerName = stringValue(plugin.providerName);
+    if (!kind || !providerName) {
+      return plugin;
+    }
+    const matchingProviders = providers.filter((item) => item.localAgent?.kind === kind);
+    const pluginProviderId = localAgentProviderIdFromPlugin(plugin, kind);
+    const provider = matchingProviders.find((item) =>
+      pluginProviderId && item.id?.trim().toLowerCase() === pluginProviderId
+    ) ?? matchingProviders.find((item) =>
+      providerPluginExactNameMatches(item, providerName)
+    ) ?? matchingProviders.find((item) =>
+      providerPluginNameMatches(item, providerName)
+    );
+    if (!provider?.localAgent) {
+      return plugin;
+    }
+
+    const sourceChanged = !sameLocalAgentConfigDir(
+      localAgentPluginConfigDir(plugin, kind),
+      provider.localAgent.configDir
+    );
+    const sourceSafePlugin = sourceChanged
+      ? withoutLocalAgentCredentialSnapshot(plugin, kind)
+      : plugin;
+    return { ...sourceSafePlugin, localAgent: provider.localAgent };
+  });
+}
+
+function withoutLocalAgentCredentialSnapshot(
+  plugin: Record<string, unknown>,
+  kind: "claude-code" | "codex"
+): Record<string, unknown> {
+  if (kind === "claude-code") {
+    const auth = isRecord(plugin.auth) ? plugin.auth : undefined;
+    const headers = isRecord(auth?.headers) ? auth.headers : undefined;
+    return headers
+      ? {
+          ...plugin,
+          auth: {
+            ...auth,
+            headers: withoutCaseInsensitiveKeys(headers, ["authorization"])
+          }
+        }
+      : plugin;
+  }
+
+  const codexOauth = isRecord(plugin.codexOauth) ? plugin.codexOauth : {};
+  const nextPlugin: Record<string, unknown> = {
+    ...plugin,
+    codexOauth: withoutCaseInsensitiveKeys(codexOauth, [
+      "accessToken",
+      "access_token",
+      "accountId",
+      "account_id",
+      "refreshToken",
+      "refresh_token"
+    ])
+  };
+  const auth = isRecord(plugin.auth) ? plugin.auth : undefined;
+  const headers = isRecord(auth?.headers) ? auth.headers : undefined;
+  if (auth && headers) {
+    nextPlugin.auth = {
+      ...auth,
+      headers: withoutCaseInsensitiveKeys(headers, [
+        "authorization",
+        "ChatGPT-Account-Id",
+        "X-OpenAI-Fedramp"
+      ])
+    };
+  }
+  return nextPlugin;
+}
+
+function withoutCaseInsensitiveKeys(
+  record: Record<string, unknown>,
+  keys: string[]
+): Record<string, unknown> {
+  const normalizedKeys = new Set(keys.map((key) => key.toLowerCase()));
+  return Object.fromEntries(
+    Object.entries(record).filter(([key]) =>
+      !normalizedKeys.has(key.toLowerCase())
+    )
+  );
+}
+
+function providerPluginExactNameMatches(
+  provider: GatewayProviderConfig,
+  configuredName: string
+): boolean {
+  const normalizedName = configuredName.trim().toLowerCase();
+  return provider.name.trim().toLowerCase() === normalizedName ||
+    providerRuntimeId(provider).toLowerCase() === normalizedName;
+}
+
+function providerPluginNameMatches(
+  provider: GatewayProviderConfig,
+  configuredName: string
+): boolean {
+  return providerPluginExactNameMatches(provider, configuredName) ||
+    normalizedProviderCapabilities(provider).some((capability) =>
+      providerCapabilityNameMatches(provider, capability.type, configuredName)
+    );
+}
+
+function localAgentPluginConfigDir(
+  plugin: Record<string, unknown>,
+  kind: "claude-code" | "codex"
+): string | undefined {
+  const localAgent = isRecord(plugin.localAgent) ? plugin.localAgent : undefined;
+  return stringValue(localAgent?.kind) === kind
+    ? stringValue(localAgent?.configDir)
+    : undefined;
+}
+
+function memoizeLocalAgentCredentialRead<T>(
+  readCredential: (configDir?: string) => T
+): (configDir?: string) => T {
+  const results = new Map<string | undefined, T>();
+  return (configDir?: string) => {
+    const normalizedConfigDir = configDir
+      ? normalizeLocalAgentConfigDir(configDir)
+      : undefined;
+    if (!results.has(normalizedConfigDir)) {
+      results.set(normalizedConfigDir, readCredential(normalizedConfigDir));
+    }
+    return results.get(normalizedConfigDir) as T;
+  };
+}
+
+function localAgentProviderIdFromPlugin(
+  plugin: Record<string, unknown>,
+  kind: "claude-code" | "codex"
+): string | undefined {
+  const key = stringValue(plugin.key)?.toLowerCase();
+  const prefix = "ccr-local-agent-";
+  if (!key?.startsWith(prefix)) {
+    return undefined;
+  }
+  const suffixes = kind === "codex"
+    ? ["-codex-oauth-internal", "-codex-oauth"]
+    : ["-claude-code-oauth-internal", "-claude-code-oauth"];
+  const suffix = suffixes.find((value) => key.endsWith(value));
+  if (!suffix) {
+    return undefined;
+  }
+  return key.slice(prefix.length, -suffix.length) || undefined;
+}
+
 function providerPluginEnabled(plugin: unknown): boolean {
   return !isRecord(plugin) || plugin.enabled !== false;
 }
@@ -222,13 +398,9 @@ function providerPluginEnabled(plugin: unknown): boolean {
 function withMissingCodexOauthProviderPlugins(
   providerPlugins: unknown[],
   explicitProviderPlugins: unknown[],
-  providers: GatewayProviderConfig[]
+  providers: GatewayProviderConfig[],
+  readCodexAuthForCompile: typeof readCodexAuth
 ): unknown[] {
-  const codexAuth = readCodexAuth();
-  if (!codexAuth?.accessToken && !codexAuth?.refreshToken) {
-    return providerPlugins;
-  }
-
   const codexOauthProviderNames = codexOauthLocalProviderNames(explicitProviderPlugins);
   const additions: unknown[] = [];
   for (const provider of providers) {
@@ -244,6 +416,14 @@ function withMissingCodexOauthProviderPlugins(
     ) {
       continue;
     }
+    const codexAuth = readCodexAuthForCompile(
+      provider.localAgent?.kind === "codex"
+        ? provider.localAgent.configDir
+        : undefined
+    );
+    if (!codexAuth?.accessToken && !codexAuth?.refreshToken) {
+      continue;
+    }
 
     const keyPrefix = `ccr-local-agent-${providerNameSlug(runtimeName)}`;
     additions.push({
@@ -255,6 +435,7 @@ function withMissingCodexOauthProviderPlugins(
         required: true
       },
       key: `${keyPrefix}-codex-oauth-recovered`,
+      ...(provider.localAgent ? { localAgent: provider.localAgent } : {}),
       providerName: provider.name
     });
   }
@@ -454,13 +635,18 @@ function coreGatewayProviderSelectorName(
 }
 
 
-function withCodexOauthRuntimeDefaults(providerPlugins: unknown[]): unknown[] {
-  const codexAuth = readCodexAuth();
+function withCodexOauthRuntimeDefaults(
+  providerPlugins: unknown[],
+  readCodexAuthForCompile: typeof readCodexAuth
+): unknown[] {
   return providerPlugins.map((plugin) => {
     if (!isLocalCodexOauthProviderPlugin(plugin)) {
       return plugin;
     }
 
+    const codexAuth = readCodexAuthForCompile(
+      localAgentPluginConfigDir(plugin, "codex")
+    );
     const codexOauth = plugin.codexOauth;
     const nextCodexOauth = {
       ...codexOauth,
@@ -491,17 +677,18 @@ function withCodexOauthRuntimeDefaults(providerPlugins: unknown[]): unknown[] {
 }
 
 
-function withClaudeCodeOauthRuntimeDefaults(providerPlugins: unknown[]): unknown[] {
-  if (!providerPlugins.some(isLocalClaudeCodeOauthProviderPlugin)) {
-    return providerPlugins;
-  }
-  const oauth = readClaudeCodeOauth();
-  if (!oauth?.accessToken) {
-    return providerPlugins;
-  }
-
+function withClaudeCodeOauthRuntimeDefaults(
+  providerPlugins: unknown[],
+  readClaudeCodeOauthForCompile: typeof readClaudeCodeOauth
+): unknown[] {
   return providerPlugins.map((plugin) => {
     if (!isLocalClaudeCodeOauthProviderPlugin(plugin)) {
+      return plugin;
+    }
+    const oauth = readClaudeCodeOauthForCompile(
+      localAgentPluginConfigDir(plugin, "claude-code")
+    );
+    if (!oauth?.accessToken) {
       return plugin;
     }
     const currentAuth = isRecord(plugin.auth) ? plugin.auth : {};
@@ -720,7 +907,22 @@ function normalizeCoreProviderPluginNames(
     if (!configuredName) {
       return plugin;
     }
-    const providerName = compiledProviderNameForPlugin(configuredName, providers);
+    const kind = isLocalCodexOauthProviderPlugin(plugin)
+      ? "codex"
+      : isLocalClaudeCodeOauthProviderPlugin(plugin)
+        ? "claude-code"
+        : undefined;
+    const pluginProviderId = kind
+      ? localAgentProviderIdFromPlugin(plugin, kind)
+      : undefined;
+    const preferredProvider = pluginProviderId
+      ? providers.find((provider) => provider.id?.trim().toLowerCase() === pluginProviderId)
+      : undefined;
+    const providerName = compiledProviderNameForPlugin(
+      configuredName,
+      providers,
+      preferredProvider
+    );
     return providerName === configuredName ? plugin : { ...plugin, providerName };
   });
 }
@@ -728,8 +930,25 @@ function normalizeCoreProviderPluginNames(
 
 function compiledProviderNameForPlugin(
   configuredName: string,
-  providers: GatewayProviderConfig[]
+  providers: GatewayProviderConfig[],
+  preferredProvider?: GatewayProviderConfig
 ): string {
+  const exactProvider = preferredProvider ?? providers.find((provider) =>
+    providerPluginExactNameMatches(provider, configuredName)
+  );
+  if (exactProvider) {
+    const capabilities = normalizedProviderCapabilities(exactProvider);
+    if (capabilities.length === 0) {
+      return providerRuntimeId(exactProvider);
+    }
+    const matchingCapability = capabilities.find((capability) =>
+      providerCapabilityNameMatches(exactProvider, capability.type, configuredName)
+    );
+    return matchingCapability
+      ? providerCapabilityInternalName(exactProvider, matchingCapability.type)
+      : exactProvider.name;
+  }
+
   for (const provider of providers) {
     const capabilities = normalizedProviderCapabilities(provider);
     if (capabilities.length === 0) {

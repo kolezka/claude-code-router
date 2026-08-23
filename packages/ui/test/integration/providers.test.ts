@@ -8,7 +8,8 @@ import { minimaxChinaProviderPreset } from "@ccr/core/providers/presets/minimax/
 import { moonshotGlobalProviderPreset } from "@ccr/core/providers/presets/moonshot/index.ts";
 import { qiniuAiProviderPreset } from "@ccr/core/providers/presets/qiniu-ai/index.ts";
 import { xiaomiMimoProviderPreset } from "@ccr/core/providers/presets/xiaomi/index.ts";
-import { AddProviderDialog, AddProviderForm, ProviderConnectivityCheckDialog, ProvidersView, uniqueProviderProbeProtocolRows } from "@ccr/ui/pages/home/components/providers.tsx";
+import { localCodexProviderDraftProbeKey } from "@ccr/ui/pages/home/App.tsx";
+import { AddProviderDialog, AddProviderForm, localAgentProviderAlreadyImported, localAgentProviderConfigDirsAfterDiscovery, localAgentProviderImportedName, localAgentProviderImportRequest, ProviderConnectivityCheckDialog, ProvidersView, uniqueProviderProbeProtocolRows } from "@ccr/ui/pages/home/components/providers.tsx";
 import {
   applyProviderProbeResult,
   createProviderConfigFromDeepLink,
@@ -20,6 +21,9 @@ import {
   customProviderPresetId,
   FieldGroup,
   localAgentProviderIconUrls,
+  localCodexProviderProbeRequestForDraft,
+  mergeProviderPluginsForSave,
+  normalizeLocalAgentConfigDirForComparison,
   providerCapabilitiesForProtocols,
   providerCapabilitiesForSave,
   providerCapabilityBaseUrlForProtocol,
@@ -31,6 +35,7 @@ import {
   parseProviderAccountDraft,
   providerBrowserConnectorFromDraft,
   providerGlobalBaseUrlForProbe,
+  providerLocalAgentConfigForSave,
   providerPresetIconUrls,
   providerProtocolOptions,
   providerProbeCandidates,
@@ -215,6 +220,343 @@ test("provider draft restores manual protocol detection mode", () => {
   assert.equal(draft.autoFetchModels, true);
   assert.deepEqual(draft.autoFetchKnownModels, ["custom-model", "excluded-model"]);
   assert.deepEqual(draft.selectedProtocols, ["openai_chat_completions"]);
+});
+
+test("provider draft restores the local agent configuration directory", () => {
+  const provider = {
+    api_base_url: "https://chatgpt.com/backend-api/codex",
+    api_key: "ccr-local-agent-login",
+    localAgent: {
+      configDir: "/var/lib/codex-two",
+      kind: "codex" as const
+    },
+    models: ["gpt-5-codex"],
+    name: "Codex Two",
+    type: "openai_responses" as const
+  };
+
+  const draft = createProviderDraftFromProvider(provider);
+
+  assert.deepEqual(draft.localAgent, provider.localAgent);
+});
+
+test("provider save keeps source metadata only for local agent credentials", () => {
+  const draft = {
+    ...createProviderDraft([]),
+    apiKey: "ccr-local-agent-login",
+    baseUrl: "https://api.anthropic.com",
+    localAgent: {
+      configDir: "/Users/test/.claude-two",
+      kind: "claude-code" as const
+    },
+    protocol: "anthropic_messages" as const
+  };
+
+  assert.deepEqual(providerLocalAgentConfigForSave(draft), draft.localAgent);
+  assert.equal(providerLocalAgentConfigForSave({ ...draft, apiKey: "sk-anthropic" }), undefined);
+  assert.equal(providerLocalAgentConfigForSave({
+    ...draft,
+    baseUrl: "https://unrelated.example.com"
+  }), undefined);
+  assert.equal(providerLocalAgentConfigForSave({
+    ...draft,
+    protocol: "openai_chat_completions"
+  }), undefined);
+  assert.equal(providerLocalAgentConfigForSave({
+    ...draft,
+    protocolDetectionMode: "manual",
+    selectedProtocols: ["openai_chat_completions"]
+  }), undefined);
+});
+
+test("local agent discovery seeds untouched scan fields from environment-aware defaults", () => {
+  assert.deepEqual(
+    localAgentProviderConfigDirsAfterDiscovery(
+      {
+        "claude-code": "~/.claude",
+        codex: "/Users/test/custom-codex"
+      },
+      [
+        {
+          defaultConfigDir: "/Users/test/.claude-work",
+          kind: "claude-code"
+        },
+        {
+          defaultConfigDir: "/Users/test/.codex-work",
+          kind: "codex"
+        }
+      ]
+    ),
+    {
+      "claude-code": "/Users/test/.claude-work",
+      codex: "/Users/test/custom-codex"
+    }
+  );
+});
+
+test("local agent path comparison preserves literal backslashes in POSIX paths", () => {
+  assert.notEqual(
+    normalizeLocalAgentConfigDirForComparison("/Users/test/.claude\\archive"),
+    normalizeLocalAgentConfigDirForComparison("/Users/test/.claude/archive")
+  );
+});
+
+test("local agent path comparison preserves the UNC share root", () => {
+  assert.equal(
+    normalizeLocalAgentConfigDirForComparison("\\\\server\\share\\..\\other"),
+    normalizeLocalAgentConfigDirForComparison("\\\\server\\share\\other")
+  );
+  assert.notEqual(
+    normalizeLocalAgentConfigDirForComparison("\\\\server\\share\\..\\other"),
+    normalizeLocalAgentConfigDirForComparison("\\\\server\\other")
+  );
+});
+
+test("local agent imports treat different configuration directories as independent providers", () => {
+  const provider = {
+    api_base_url: "https://api.anthropic.com",
+    api_key: "ccr-local-agent-login",
+    localAgent: {
+      configDir: "/Users/test/.claude",
+      kind: "claude-code" as const
+    },
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    type: "anthropic_messages" as const
+  };
+  const candidate = {
+    id: "claude-code-api",
+    importable: true,
+    kind: "claude-code" as const,
+    localAgent: {
+      configDir: "/Users/test/.claude-two",
+      kind: "claude-code" as const
+    },
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    protocol: "anthropic_messages" as const,
+    status: "available" as const
+  };
+
+  const providerPlugins = [{
+    key: "ccr-local-agent-claude-code-api-claude-code-oauth",
+    providerName: provider.name
+  }];
+
+  assert.equal(localAgentProviderAlreadyImported(candidate, [provider], providerPlugins), false);
+  assert.equal(localAgentProviderAlreadyImported({
+    ...candidate,
+    localAgent: provider.localAgent
+  }, [provider], providerPlugins), true);
+  assert.equal(localAgentProviderAlreadyImported({
+    ...candidate,
+    localAgent: provider.localAgent
+  }, [{
+    ...provider,
+    apiKey: provider.api_key,
+    api_key: undefined
+  }], providerPlugins), true);
+});
+
+test("default local agent import ignores providers bound to another explicit source", () => {
+  const provider = {
+    api_key: "ccr-local-agent-login",
+    localAgent: {
+      configDir: "/Users/test/.claude-two",
+      kind: "claude-code" as const
+    },
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    type: "anthropic_messages" as const
+  };
+  const candidate = {
+    defaultConfigDir: "/Users/test/.claude",
+    id: "claude-code-api",
+    importable: true,
+    kind: "claude-code" as const,
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    protocol: "anthropic_messages" as const,
+    status: "available" as const
+  };
+  const providerPlugins = [{
+    key: "ccr-local-agent-claude-code-api-claude-code-oauth",
+    providerName: provider.name
+  }];
+
+  assert.equal(localAgentProviderAlreadyImported(candidate, [provider], providerPlugins), false);
+});
+
+test("default local agent import detects an equivalent explicit default source path", () => {
+  const provider = {
+    api_key: "ccr-local-agent-login",
+    localAgent: {
+      configDir: "/Users/test/.claude/.",
+      kind: "claude-code" as const
+    },
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    type: "anthropic_messages" as const
+  };
+  const candidate = {
+    defaultConfigDir: "/Users/test//.claude",
+    id: "claude-code-api",
+    importable: true,
+    kind: "claude-code" as const,
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    protocol: "anthropic_messages" as const,
+    status: "available" as const
+  };
+  const providerPlugins = [{
+    key: "ccr-local-agent-claude-code-api-claude-code-oauth",
+    providerName: provider.name
+  }];
+
+  assert.equal(localAgentProviderAlreadyImported(candidate, [provider], providerPlugins), true);
+});
+
+test("legacy local agent duplicate checks honor camelCase API keys", () => {
+  const provider = {
+    apiKey: "ccr-local-agent-login",
+    baseUrl: "https://api.anthropic.com",
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    type: "anthropic_messages" as const
+  };
+  const candidate = {
+    id: "claude-code-api",
+    importable: true,
+    kind: "claude-code" as const,
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    protocol: "anthropic_messages" as const,
+    status: "available" as const
+  };
+  const providerPlugins = [{
+    key: "ccr-local-agent-claude-code-api-claude-code-oauth",
+    providerName: provider.name
+  }];
+
+  assert.equal(localAgentProviderAlreadyImported(candidate, [provider], providerPlugins), true);
+});
+
+test("local agent import remains available when its provider plugin is missing", () => {
+  const provider = {
+    api_key: "ccr-local-agent-login",
+    localAgent: {
+      configDir: "/Users/test/.claude-two",
+      kind: "claude-code" as const
+    },
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    type: "anthropic_messages" as const
+  };
+  const candidate = {
+    id: "claude-code-api",
+    importable: true,
+    kind: "claude-code" as const,
+    localAgent: provider.localAgent,
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    protocol: "anthropic_messages" as const,
+    status: "available" as const
+  };
+
+  assert.equal(localAgentProviderAlreadyImported(candidate, [provider], []), false);
+});
+
+test("local agent import requests include the selected configuration directory", () => {
+  const candidate = {
+    id: "codex-api",
+    importable: true,
+    kind: "codex" as const,
+    localAgent: {
+      configDir: "/Users/test/.codex-two",
+      kind: "codex" as const
+    },
+    models: ["gpt-5-codex"],
+    name: "Codex API",
+    protocol: "openai_responses" as const,
+    status: "available" as const
+  };
+
+  assert.deepEqual(
+    localAgentProviderImportRequest(candidate, ["Codex API"]),
+    {
+      configDir: "/Users/test/.codex-two",
+      id: "codex-api",
+      providerNames: ["Codex API"]
+    }
+  );
+});
+
+test("legacy local agent imports do not invent a configuration directory", () => {
+  const candidate = {
+    id: "claude-code-api",
+    importable: true,
+    kind: "claude-code" as const,
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    protocol: "anthropic_messages" as const,
+    status: "available" as const
+  };
+
+  assert.deepEqual(
+    localAgentProviderImportRequest(candidate, []),
+    {
+      id: "claude-code-api",
+      providerNames: []
+    }
+  );
+});
+
+test("editing a local agent source preserves the provider name", () => {
+  assert.equal(localAgentProviderImportedName("edit", "Team Codex", "Codex API 2"), "Team Codex");
+  assert.equal(localAgentProviderImportedName("add", "provider", "Codex API 2"), "Codex API 2");
+});
+
+test("local Codex probe identity changes with the selected CODEX_HOME", () => {
+  const draft = {
+    ...createProviderDraft([]),
+    apiKey: "ccr-local-agent-login",
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+    localAgent: {
+      configDir: "/Users/test/.codex-one",
+      kind: "codex" as const
+    },
+    protocol: "openai_responses" as const
+  };
+
+  assert.notEqual(
+    localCodexProviderDraftProbeKey(draft),
+    localCodexProviderDraftProbeKey({
+      ...draft,
+      localAgent: {
+        configDir: "/Users/test/.codex-two",
+        kind: "codex"
+      }
+    })
+  );
+});
+
+test("local Codex probe requests include the selected CODEX_HOME", () => {
+  const draft = {
+    ...createProviderDraft([]),
+    localAgent: {
+      configDir: "/Users/test/.codex-two",
+      kind: "codex" as const
+    }
+  };
+
+  assert.deepEqual(localCodexProviderProbeRequestForDraft(draft, true), {
+    configDir: "/Users/test/.codex-two",
+    forceRefresh: true,
+    id: "codex-api"
+  });
+  assert.deepEqual(localCodexProviderProbeRequestForDraft({ ...draft, localAgent: undefined }), {
+    id: "codex-api"
+  });
 });
 
 test("provider auto fetch known model baseline preserves excluded and removed models", () => {
@@ -510,6 +852,37 @@ test("AddProviderForm shows preset endpoint under the selected provider name", (
   assert.match(html, /Google Gemini/);
   assert.ok(endpoint);
   assert.equal((html.match(new RegExp(endpoint.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? []).length, 2);
+});
+
+test("AddProviderForm restores the local agent configuration directory while editing", () => {
+  const draft = {
+    ...createProviderDraft([]),
+    apiKey: "ccr-local-agent-login",
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+    localAgent: {
+      configDir: "/Users/test/.codex-two",
+      kind: "codex" as const
+    },
+    modelsText: "gpt-5-codex",
+    name: "Codex Two",
+    protocol: "openai_responses" as const,
+    selectedProtocols: ["openai_responses" as const]
+  };
+  const html = renderToStaticMarkup(
+    React.createElement(AddProviderForm, {
+      activeStep: "provider",
+      draft,
+      error: "",
+      mode: "edit",
+      onChange: () => undefined,
+      probeLoading: false,
+      providers: []
+    })
+  );
+
+  assert.match(html, /Configuration directory/);
+  assert.match(html, /value="\/Users\/test\/\.codex-two"/);
+  assert.match(html, />Scan</);
 });
 
 test("AddProviderForm lets users choose credential pool in credentials step", () => {
@@ -900,6 +1273,343 @@ test("provider connectivity includes saved Codex OAuth plugins while editing", (
   assert.deepEqual(
     providerConnectivityProviderPlugins(poolDraft, [displayPlugin, runtimePlugin, otherPlugin], poolProvider),
     [displayPlugin, runtimePlugin]
+  );
+});
+
+test("provider connectivity replaces a stale Codex source and credential snapshot", () => {
+  const sourceA = { configDir: "/Users/test/.codex", kind: "codex" as const };
+  const sourceB = { configDir: "/Users/test/.codex-two", kind: "codex" as const };
+  const provider = {
+    api_base_url: "https://chatgpt.com/backend-api/codex",
+    api_key: "ccr-local-agent-login",
+    id: "codex-api",
+    localAgent: sourceA,
+    models: ["gpt-5.5"],
+    name: "Codex API",
+    type: "openai_responses" as const
+  };
+  const draft = {
+    ...createProviderDraftFromProvider(provider),
+    localAgent: sourceB
+  };
+  const plugin = {
+    auth: {
+      headers: {
+        "X-Custom": "preserved",
+        "X-OpenAI-Fedramp": "true"
+      }
+    },
+    codexOauth: {
+      accessToken: "stale-access-token",
+      access_token: "stale-access-token-alias",
+      accountId: "stale-account-id",
+      account_id: "stale-account-id-alias",
+      refreshIfMissingAccessToken: true,
+      refreshToken: "stale-refresh-token",
+      refresh_token: "stale-refresh-token-alias",
+      required: true
+    },
+    key: "ccr-local-agent-codex-api-codex-oauth",
+    localAgent: sourceA,
+    providerName: "Codex API",
+    request: { transforms: [{ type: "merge", value: { store: false } }] }
+  };
+
+  assert.deepEqual(
+    providerConnectivityProviderPlugins(draft, [plugin], provider),
+    [{
+      ...plugin,
+      auth: { headers: { "X-Custom": "preserved" } },
+      codexOauth: {
+        refreshIfMissingAccessToken: true,
+        required: true
+      },
+      localAgent: sourceB
+    }]
+  );
+});
+
+test("provider connectivity replaces a stale Claude Code source and credential snapshot", () => {
+  const sourceA = { configDir: "/Users/test/.claude", kind: "claude-code" as const };
+  const sourceB = { configDir: "/Users/test/.claude-two", kind: "claude-code" as const };
+  const provider = {
+    api_base_url: "https://api.anthropic.com",
+    api_key: "ccr-local-agent-login",
+    id: "claude-code-api",
+    localAgent: sourceA,
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    type: "anthropic_messages" as const
+  };
+  const draft = {
+    ...createProviderDraftFromProvider(provider),
+    localAgent: sourceB
+  };
+  const plugin = {
+    auth: {
+      headers: {
+        authorization: "Bearer stale-access-token",
+        "anthropic-beta": "oauth-2025-04-20",
+        "x-preserved-header": "preserved"
+      },
+      removeHeaders: ["x-api-key"]
+    },
+    key: "ccr-local-agent-claude-code-api-claude-code-oauth",
+    localAgent: sourceA,
+    providerName: "Claude Code API"
+  };
+
+  assert.deepEqual(
+    providerConnectivityProviderPlugins(draft, [plugin], provider),
+    [{
+      ...plugin,
+      auth: {
+        ...plugin.auth,
+        headers: {
+          "anthropic-beta": "oauth-2025-04-20",
+          "x-preserved-header": "preserved"
+        }
+      },
+      localAgent: sourceB
+    }]
+  );
+});
+
+test("provider connectivity clears an explicit Codex source from a legacy draft", () => {
+  const source = { configDir: "/Users/test/.codex-two", kind: "codex" as const };
+  const provider = {
+    api_base_url: "https://chatgpt.com/backend-api/codex",
+    api_key: "ccr-local-agent-login",
+    id: "codex-api",
+    models: ["gpt-5.5"],
+    name: "Codex API",
+    type: "openai_responses" as const
+  };
+  const draft = createProviderDraftFromProvider(provider);
+  const plugin = {
+    auth: { headers: { "X-OpenAI-Fedramp": "true" } },
+    codexOauth: {
+      accessToken: "stale-access-token",
+      accountId: "stale-account-id",
+      refreshToken: "stale-refresh-token",
+      required: true
+    },
+    key: "ccr-local-agent-codex-api-codex-oauth",
+    localAgent: source,
+    providerName: "Codex API"
+  };
+
+  assert.deepEqual(
+    providerConnectivityProviderPlugins(draft, [plugin], provider),
+    [{
+      auth: { headers: {} },
+      codexOauth: { required: true },
+      key: plugin.key,
+      providerName: plugin.providerName
+    }]
+  );
+});
+
+test("provider connectivity preserves equivalent-source and legacy Codex snapshots", () => {
+  const source = { configDir: "/Users/test/.codex-two", kind: "codex" as const };
+  const explicitProvider = {
+    api_base_url: "https://chatgpt.com/backend-api/codex",
+    api_key: "ccr-local-agent-login",
+    id: "codex-api",
+    localAgent: source,
+    models: ["gpt-5.5"],
+    name: "Codex API",
+    type: "openai_responses" as const
+  };
+  const explicitDraft = createProviderDraftFromProvider(explicitProvider);
+  const explicitPlugin = {
+    codexOauth: { accessToken: "same-source-token" },
+    key: "ccr-local-agent-codex-api-codex-oauth",
+    localAgent: {
+      configDir: `${source.configDir}/.`,
+      kind: source.kind
+    },
+    providerName: "Codex API"
+  };
+  const legacyProvider = {
+    ...explicitProvider,
+    localAgent: undefined
+  };
+  const legacyDraft = createProviderDraftFromProvider(legacyProvider);
+  const legacyPlugin = {
+    codexOauth: { accessToken: "legacy-token" },
+    key: "ccr-local-agent-codex-api-codex-oauth",
+    providerName: "Codex API"
+  };
+
+  assert.deepEqual(
+    providerConnectivityProviderPlugins(explicitDraft, [explicitPlugin], explicitProvider),
+    [explicitPlugin]
+  );
+  assert.deepEqual(
+    providerConnectivityProviderPlugins(legacyDraft, [legacyPlugin], legacyProvider),
+    [legacyPlugin]
+  );
+});
+
+test("provider save replaces every stale local agent plugin when the source changes", () => {
+  const provider = {
+    api_base_url: "https://chatgpt.com/backend-api/codex",
+    api_key: "ccr-local-agent-login",
+    id: "codex-api",
+    localAgent: { configDir: "/Users/test/.codex", kind: "codex" as const },
+    models: ["gpt-5-codex"],
+    name: "Codex API",
+    type: "openai_responses" as const
+  };
+  const staleDisplayPlugin = {
+    key: "ccr-local-agent-codex-api-codex-oauth",
+    localAgent: provider.localAgent,
+    providerName: "Codex API"
+  };
+  const staleExtraPlugin = {
+    key: "ccr-local-agent-codex-api-codex-oauth-legacy",
+    localAgent: provider.localAgent,
+    providerName: "Codex API"
+  };
+  const unrelatedPlugin = {
+    key: "ccr-local-agent-other-codex-oauth",
+    providerName: "Other Codex API"
+  };
+  const replacementPlugin = {
+    key: "ccr-local-agent-codex-api-codex-oauth",
+    localAgent: { configDir: "/Users/test/.codex-two", kind: "codex" as const },
+    providerName: "Codex API"
+  };
+
+  assert.deepEqual(
+    mergeProviderPluginsForSave(
+      [staleDisplayPlugin, staleExtraPlugin, unrelatedPlugin],
+      [replacementPlugin],
+      provider
+    ),
+    [unrelatedPlugin, replacementPlugin]
+  );
+});
+
+test("provider save preserves local agent plugins when an edit keeps local credentials", () => {
+  const provider = {
+    api_base_url: "https://api.anthropic.com",
+    api_key: "ccr-local-agent-login",
+    id: "claude-code-api",
+    localAgent: {
+      configDir: "/Users/test/.claude",
+      kind: "claude-code" as const
+    },
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    type: "anthropic_messages" as const
+  };
+  const displayPlugin = {
+    key: "ccr-local-agent-claude-code-api-claude-code-oauth",
+    providerName: "Claude Code API"
+  };
+  const runtimePlugin = {
+    key: "ccr-local-agent-claude-code-api-claude-code-oauth-internal",
+    providerName: "claude-code-api::anthropic_messages"
+  };
+  const unrelatedPlugin = {
+    key: "ccr-local-agent-other-claude-code-oauth",
+    providerName: "Other Claude Code API"
+  };
+  const savedProvider = {
+    ...provider,
+    models: ["claude-sonnet-5", "claude-opus-5"]
+  };
+
+  assert.deepEqual(
+    mergeProviderPluginsForSave(
+      [displayPlugin, runtimePlugin, unrelatedPlugin],
+      [],
+      provider,
+      savedProvider
+    ),
+    [displayPlugin, runtimePlugin, unrelatedPlugin]
+  );
+});
+
+test("provider save removes local agent plugins when credentials become a normal API key", () => {
+  const provider = {
+    api_base_url: "https://api.anthropic.com",
+    api_key: "ccr-local-agent-login",
+    id: "claude-code-api",
+    localAgent: {
+      configDir: "/Users/test/.claude",
+      kind: "claude-code" as const
+    },
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    type: "anthropic_messages" as const
+  };
+  const staleDisplayPlugin = {
+    key: "ccr-local-agent-claude-code-api-claude-code-oauth",
+    providerName: "Claude Code API"
+  };
+  const staleRuntimePlugin = {
+    key: "ccr-local-agent-claude-code-api-claude-code-oauth-internal",
+    providerName: "claude-code-api::anthropic_messages"
+  };
+  const unrelatedPlugin = {
+    key: "ccr-local-agent-other-claude-code-oauth",
+    providerName: "Other Claude Code API"
+  };
+  const savedProvider = {
+    ...provider,
+    api_key: "normal-api-key",
+    localAgent: undefined
+  };
+
+  assert.deepEqual(
+    mergeProviderPluginsForSave(
+      [staleDisplayPlugin, staleRuntimePlugin, unrelatedPlugin],
+      [],
+      provider,
+      savedProvider
+    ),
+    [unrelatedPlugin]
+  );
+});
+
+test("provider save removes local agent plugins when the endpoint no longer uses local authentication", () => {
+  const provider = {
+    api_base_url: "https://api.anthropic.com",
+    api_key: "ccr-local-agent-login",
+    id: "claude-code-api",
+    localAgent: {
+      configDir: "/Users/test/.claude-two",
+      kind: "claude-code" as const
+    },
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    type: "anthropic_messages" as const
+  };
+  const stalePlugin = {
+    key: "ccr-local-agent-claude-code-api-claude-code-oauth",
+    providerName: "Claude Code API"
+  };
+  const unrelatedPlugin = {
+    key: "ccr-local-agent-other-claude-code-oauth",
+    providerName: "Other Claude Code API"
+  };
+  const savedProvider = {
+    ...provider,
+    api_base_url: "https://unrelated.example.com",
+    localAgent: undefined
+  };
+
+  assert.deepEqual(
+    mergeProviderPluginsForSave(
+      [stalePlugin, unrelatedPlugin],
+      [],
+      provider,
+      savedProvider
+    ),
+    [unrelatedPlugin]
   );
 });
 

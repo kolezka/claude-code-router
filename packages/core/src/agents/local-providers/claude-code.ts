@@ -8,6 +8,7 @@ import type {
   ProviderAccountConfig,
   ProviderAccountMappingConfig
 } from "@ccr/core/contracts/app";
+import { normalizeLocalAgentConfigDir } from "@ccr/core/agents/local-providers/source";
 import {
   bearerAuthPlugin,
   isRecord,
@@ -81,15 +82,17 @@ const claudeCodeAccountMapping: ProviderAccountMappingConfig = {
   ]
 };
 
-export function claudeCodeCandidate(): LocalAgentProviderCandidate {
-  const scan = scanClaudeCodeLogin();
+export function claudeCodeCandidate(configDir?: string): LocalAgentProviderCandidate {
+  const scan = scanClaudeCodeLogin(configDir);
   const oauth = scan.oauth;
+  const localAgent = configDir ? { configDir, kind: "claude-code" as const } : undefined;
   if (oauth?.accessToken) {
     return {
       detail: "Claude Code login detected. Click Import to add it as a gateway provider.",
       id: "claude-code-api",
       importable: true,
       kind: "claude-code",
+      ...(localAgent ? { localAgent } : {}),
       models: claudeDefaultModels,
       name: "Claude Code API",
       protocol: "anthropic_messages",
@@ -103,6 +106,7 @@ export function claudeCodeCandidate(): LocalAgentProviderCandidate {
       id: "claude-code-api",
       importable: false,
       kind: "claude-code",
+      ...(localAgent ? { localAgent } : {}),
       models: claudeDefaultModels,
       name: "Claude Code API",
       protocol: "anthropic_messages",
@@ -117,6 +121,7 @@ export function claudeCodeCandidate(): LocalAgentProviderCandidate {
       id: "claude-code-api",
       importable: false,
       kind: "claude-code",
+      ...(localAgent ? { localAgent } : {}),
       models: claudeDefaultModels,
       name: "Claude Code API",
       protocol: "anthropic_messages",
@@ -124,7 +129,10 @@ export function claudeCodeCandidate(): LocalAgentProviderCandidate {
       status: "locked"
     };
   }
-  return missingCandidate("claude-code", "claude-code-api", "Claude Code API", "anthropic_messages", claudeDefaultModels);
+  return {
+    ...missingCandidate("claude-code", "claude-code-api", "Claude Code API", "anthropic_messages", claudeDefaultModels),
+    ...(localAgent ? { localAgent } : {})
+  };
 }
 
 // Distinguishes "found login state but no token" and "could not read the store"
@@ -140,8 +148,12 @@ function claudeCodeScanDiagnostic(scan: ClaudeCodeLoginScan): string | undefined
   return undefined;
 }
 
-export function importClaudeCodeProvider(candidate: LocalAgentProviderCandidate, providerNames: string[]): LocalAgentProviderImportResult {
-  const oauth = readClaudeCodeOauth();
+export function importClaudeCodeProvider(
+  candidate: LocalAgentProviderCandidate,
+  providerNames: string[],
+  configDir?: string
+): LocalAgentProviderImportResult {
+  const oauth = readClaudeCodeOauth(configDir);
   const token = oauth?.accessToken;
   if (!token) {
     throw new Error("Claude Code access token was not found.");
@@ -161,7 +173,10 @@ export function importClaudeCodeProvider(candidate: LocalAgentProviderCandidate,
   return {
     candidate,
     provider,
-    providerPlugins: [auth, internalAuth]
+    providerPlugins: [auth, internalAuth].map((plugin) => ({
+      ...plugin,
+      ...(candidate.localAgent ? { localAgent: candidate.localAgent } : {})
+    }))
   };
 }
 
@@ -183,19 +198,22 @@ function claudeCodeProviderAccountConfig(): ProviderAccountConfig {
   };
 }
 
-export function readClaudeCodeOauth(): OAuthTokenSet | undefined {
-  return scanClaudeCodeLogin().oauth;
+export function readClaudeCodeOauth(configDir?: string): OAuthTokenSet | undefined {
+  return scanClaudeCodeLogin(configDir).oauth;
 }
 
-export function scanClaudeCodeLogin(): ClaudeCodeLoginScan {
+export function scanClaudeCodeLogin(configDir?: string): ClaudeCodeLoginScan {
+  const normalizedConfigDir = configDir
+    ? normalizeLocalAgentConfigDir(configDir)
+    : undefined;
   const scan: ClaudeCodeLoginScan = { errors: [], inspected: [], tokenless: [] };
-  const keychainOauth = scanClaudeCodeKeychain(scan);
+  const keychainOauth = scanClaudeCodeKeychain(scan, normalizedConfigDir);
   if (keychainOauth) {
     scan.oauth = keychainOauth;
     return scan;
   }
 
-  for (const sourceFile of claudeCredentialFiles()) {
+  for (const sourceFile of claudeCredentialFiles(normalizedConfigDir)) {
     const record = readJsonRecord(sourceFile);
     if (!record) {
       continue;
@@ -219,9 +237,16 @@ export function scanClaudeCodeLogin(): ClaudeCodeLoginScan {
   return scan;
 }
 
-function claudeCredentialFiles(): string[] {
+function claudeCredentialFiles(configDir?: string): string[] {
+  if (configDir) {
+    const normalizedConfigDir = configDir.normalize("NFC");
+    return [
+      path.join(normalizedConfigDir, ".credentials.json"),
+      path.join(normalizedConfigDir, "credentials.json")
+    ];
+  }
   return uniqueStrings([
-    path.join(claudeCodeStorageDir(), ".credentials.json"),
+    path.join(claudeCodeDefaultConfigDir(), ".credentials.json"),
     path.join(os.homedir(), ".claude", ".credentials.json"),
     path.join(os.homedir(), ".claude", "credentials.json"),
     path.join(os.homedir(), ".config", "claude", "credentials.json")
@@ -230,12 +255,12 @@ function claudeCredentialFiles(): string[] {
 
 // Claude Code's plaintext fallback lives in its secure-storage config dir,
 // which CLAUDE_SECURESTORAGE_CONFIG_DIR / CLAUDE_CONFIG_DIR can relocate.
-function claudeCodeStorageDir(): string {
+export function claudeCodeDefaultConfigDir(): string {
   const secureStorageDir = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
   const dir = secureStorageDir !== undefined
     ? secureStorageDir || path.join(os.homedir(), ".claude")
     : process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
-  return dir.normalize("NFC");
+  return normalizeLocalAgentConfigDir(dir);
 }
 
 // Claude Code >= 2.1 derives the keychain service name from its config dir:
@@ -243,13 +268,22 @@ function claudeCodeStorageDir(): string {
 // `configSuffix` is empty for a default config dir and
 // `-${sha256(NFC(configDir)).slice(0, 8)}` once CLAUDE_CONFIG_DIR or
 // CLAUDE_SECURESTORAGE_CONFIG_DIR is set. Verified against 2.1.220.
-function claudeCodeExpectedKeychainServices(): string[] {
+function claudeCodeExpectedKeychainServices(configDir?: string): string[] {
+  const oauthSuffix = process.env.CLAUDE_CODE_CUSTOM_OAUTH_URL ? "-custom-oauth" : "";
+  if (configDir) {
+    const normalizedConfigDir = configDir.normalize("NFC");
+    const defaultConfigDir = path.join(os.homedir(), ".claude").normalize("NFC");
+    const configSuffix = normalizedConfigDir === defaultConfigDir
+      ? ""
+      : `-${createHash("sha256").update(normalizedConfigDir).digest("hex").slice(0, 8)}`;
+    return [`Claude Code${oauthSuffix}-credentials${configSuffix}`];
+  }
+
   const secureStorageDir = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
   const usesDefaultDir = secureStorageDir !== undefined ? !secureStorageDir : !process.env.CLAUDE_CONFIG_DIR;
   const configSuffix = usesDefaultDir
     ? ""
-    : `-${createHash("sha256").update(claudeCodeStorageDir()).digest("hex").slice(0, 8)}`;
-  const oauthSuffix = process.env.CLAUDE_CODE_CUSTOM_OAUTH_URL ? "-custom-oauth" : "";
+    : `-${createHash("sha256").update(claudeCodeDefaultConfigDir()).digest("hex").slice(0, 8)}`;
   return uniqueStrings([`Claude Code${oauthSuffix}-credentials${configSuffix}`, claudeCodeKeychainServiceBase]);
 }
 
@@ -270,19 +304,17 @@ function claudeCodeKeychainAccount(): string {
 // instead of ~/.claude/.credentials.json. Reading one triggers the standard
 // macOS keychain access prompt (Allow / Always Allow); the user declining or
 // the item not existing both surface as a non-zero exit here.
-function scanClaudeCodeKeychain(scan: ClaudeCodeLoginScan): OAuthTokenSet | undefined {
+function scanClaudeCodeKeychain(scan: ClaudeCodeLoginScan, configDir?: string): OAuthTokenSet | undefined {
   if (process.platform !== "darwin") {
     return undefined;
   }
-  const expectedServices = claudeCodeExpectedKeychainServices();
+  const expectedServices = claudeCodeExpectedKeychainServices(configDir);
   const account = claudeCodeKeychainAccount();
-  // Ordered by cost: the enumeration tier shells out to `security dump-keychain`,
-  // so it is only built once the expected item fails to produce a token.
+  // Explicit directories must stay on their derived service. Legacy automatic
+  // lookup retains enumeration so existing installations remain discoverable.
   const tiers: Array<() => ClaudeCodeKeychainCandidate[]> = [
     () => expectedServices.map(service => ({ account, service })),
-    // An item written under a different account, or under a config dir this
-    // process cannot reconstruct, only turns up by enumeration.
-    discoverClaudeCodeKeychainItems,
+    ...(configDir ? [] : [discoverClaudeCodeKeychainItems]),
     // Pre-2.1 lookup: no `-a`, so the Keychain picks an arbitrary account when
     // several items share the service name.
     () => expectedServices.map(service => ({ service }))

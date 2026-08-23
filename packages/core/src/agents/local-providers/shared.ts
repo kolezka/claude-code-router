@@ -58,6 +58,7 @@ export function providerPayload(
     account,
     apiKey: localAgentProviderApiKey,
     baseUrl,
+    localAgent: candidate.localAgent,
     modelDisplayNames: modelDisplayNamesForModels(candidate.modelDisplayNames, models),
     modelMetadata: modelMetadataForModels(candidate.modelMetadata, models),
     models,

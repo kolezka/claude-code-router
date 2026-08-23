@@ -97,6 +97,16 @@ function localAgentOauthProviderHook(plugin: unknown): ProviderHook | undefined 
   return hook;
 }
 
+function localAgentConfigDir(
+  plugin: Record<string, unknown>,
+  kind: "claude-code" | "codex"
+): string | undefined {
+  const localAgent = isRecord(plugin.localAgent) ? plugin.localAgent : undefined;
+  return stringValue(localAgent?.kind) === kind
+    ? stringValue(localAgent?.configDir)
+    : undefined;
+}
+
 function localAgentOauthKind(plugin: Record<string, unknown>): LocalAgentOauthKind | undefined {
   const key = stringValue(plugin.key)?.toLowerCase();
   if (!key?.startsWith(localAgentProviderPluginKeyPrefix)) {
@@ -137,7 +147,7 @@ async function authenticateClaudeCode(
   input: ProviderPluginInput,
   plugin: Record<string, unknown>
 ): Promise<ProviderHookResult> {
-  const token = readClaudeCodeOauth()?.accessToken || originalBearerToken(plugin);
+  const token = readClaudeCodeOauth(localAgentConfigDir(plugin, "claude-code"))?.accessToken || originalBearerToken(plugin);
   if (!token) {
     return { error: "Claude Code access token was not found.", ok: false };
   }

@@ -43,6 +43,27 @@ test("provider auto model refresh flag is parsed from camel and snake case confi
   assert.deepEqual(providers[1].autoFetchKnownModels, ["model-b", "model-hidden"]);
 });
 
+test("provider local-agent source survives config parsing", async () => {
+  const { parseProvidersForTest } = await import("@ccr/core/config/config.ts");
+  const providers = parseProvidersForTest([
+    {
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      localAgent: {
+        configDir: "/var/lib/codex-two",
+        kind: "codex"
+      },
+      models: ["gpt-5.5"],
+      name: "Codex Two",
+      protocol: "openai_responses"
+    }
+  ]);
+
+  assert.deepEqual(providers[0].localAgent, {
+    configDir: "/var/lib/codex-two",
+    kind: "codex"
+  });
+});
+
 test("explicit capabilities win over the top-level protocol", async () => {
   const { parseProvidersForTest } = await import("@ccr/core/config/config.ts");
   const providers = parseProvidersForTest([
