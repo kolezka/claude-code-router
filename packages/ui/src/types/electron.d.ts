@@ -44,6 +44,7 @@ import type {
   LocalAgentProviderImportResult,
   LocalAgentProviderProbeRequest,
   LocalAgentProviderProbeResult,
+  LocalAgentProviderScanRequest,
   PluginDirectorySelection,
   PluginMarketplaceEntry,
   ProfileOpenCommandResult,
@@ -106,7 +107,7 @@ declare global {
       getConfig: () => Promise<AppConfig>;
       getFilePath?: (file: File) => string;
       getGatewayStatus: () => Promise<GatewayStatus>;
-      getLocalAgentProviderCandidates: () => Promise<LocalAgentProviderCandidate[]>;
+      getLocalAgentProviderCandidates: (request?: LocalAgentProviderScanRequest) => Promise<LocalAgentProviderCandidate[]>;
       getOnboardingFinished: () => Promise<boolean>;
       getPendingProviderDeepLinks: () => Promise<ProviderDeepLinkRequest[]>;
       getProfileOpenCommand: (request: ProfileOpenRequest) => Promise<ProfileOpenCommandResult>;

@@ -68,6 +68,7 @@ import type {
   GatewayStatus,
   LocalAgentProviderImportRequest,
   LocalAgentProviderProbeRequest,
+  LocalAgentProviderScanRequest,
   PluginDependency,
   PluginDirectorySelection,
   ProfileApplyResult,
@@ -323,7 +324,7 @@ const rpcHandlers: Record<string, RpcHandler> = {
       Boolean(serviceToken.trim()) &&
       serviceToken === process.env.CCR_SERVICE_INSTANCE_TOKEN
   }),
-  getLocalAgentProviderCandidates: () => getLocalAgentProviderCandidates(),
+  getLocalAgentProviderCandidates: (request) => getLocalAgentProviderCandidates(request as LocalAgentProviderScanRequest | undefined),
   getOnboardingFinished: () => loadOnboardingFinished(),
   getPluginMarketplace,
   getProfileOpenCommand: async (request) => getProfileOpenCommand(await loadAppConfig(), request as ProfileOpenRequest),

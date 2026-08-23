@@ -240,15 +240,17 @@ const codexAccountTokenUsageMapping: ProviderAccountMappingConfig = {
   ]
 };
 
-export function codexCandidate(): LocalAgentProviderCandidate {
-  const auth = readCodexAuth();
-  const catalog = readCodexLocalModelCatalog();
+export function codexCandidate(configDir?: string): LocalAgentProviderCandidate {
+  const auth = readCodexAuth(configDir);
+  const catalog = readCodexLocalModelCatalog(configDir);
+  const localAgent = configDir ? { configDir, kind: "codex" as const } : undefined;
   if (auth?.refreshToken || auth?.accessToken) {
     return {
       detail: "ChatGPT login detected. Click Import to add it as a gateway provider.",
       id: "codex-api",
       importable: true,
       kind: "codex",
+      ...(localAgent ? { localAgent } : {}),
       modelDisplayNames: catalog.modelDisplayNames,
       modelMetadata: catalog.modelMetadata,
       models: catalog.models,
@@ -258,15 +260,22 @@ export function codexCandidate(): LocalAgentProviderCandidate {
       status: "available"
     };
   }
-  return missingCandidate("codex", "codex-api", "Codex API", "openai_responses", catalog.models, catalog.modelDisplayNames);
+  return {
+    ...missingCandidate("codex", "codex-api", "Codex API", "openai_responses", catalog.models, catalog.modelDisplayNames),
+    ...(localAgent ? { localAgent } : {})
+  };
 }
 
-export async function importCodexProvider(candidate: LocalAgentProviderCandidate, providerNames: string[]): Promise<LocalAgentProviderImportResult> {
-  const auth = readCodexAuth();
+export async function importCodexProvider(
+  candidate: LocalAgentProviderCandidate,
+  providerNames: string[],
+  configDir?: string
+): Promise<LocalAgentProviderImportResult> {
+  const auth = readCodexAuth(configDir);
   if (!auth?.refreshToken && !auth?.accessToken) {
     throw new Error("Codex login token was not found.");
   }
-  const probedCandidate = await codexCandidateWithProbedModels(candidate).catch(() => candidate);
+  const probedCandidate = await codexCandidateWithProbedModels(candidate, configDir).catch(() => candidate);
   const provider = providerPayload(probedCandidate, uniqueProviderName(providerNames, "Codex API"), codexDefaultBaseUrl, codexProviderAccountConfig());
   return {
     candidate: probedCandidate,
@@ -277,6 +286,7 @@ export async function importCodexProvider(candidate: LocalAgentProviderCandidate
     ].map((plugin) => ({
       ...plugin,
       ...(auth.isFedrampAccount ? { auth: { headers: { "X-OpenAI-Fedramp": "true" } } } : {}),
+      ...(probedCandidate.localAgent ? { localAgent: probedCandidate.localAgent } : {}),
       codexOauth: {
         accessToken: auth.accessToken,
         ...(auth.accountId ? { accountId: auth.accountId } : {}),
@@ -288,16 +298,19 @@ export async function importCodexProvider(candidate: LocalAgentProviderCandidate
   };
 }
 
-export async function probeCodexProvider(candidate: LocalAgentProviderCandidate): Promise<LocalAgentProviderProbeResult> {
-  const probedCandidate = await codexCandidateWithProbedModels(candidate).catch(() => candidate);
+export async function probeCodexProvider(
+  candidate: LocalAgentProviderCandidate,
+  configDir?: string
+): Promise<LocalAgentProviderProbeResult> {
+  const probedCandidate = await codexCandidateWithProbedModels(candidate, configDir).catch(() => candidate);
   return {
     candidate: probedCandidate,
     probe: codexProviderProbe(probedCandidate)
   };
 }
 
-export function readCodexAuth(): OAuthTokenSet | undefined {
-  const sourceFile = path.join(codexHomeDir(), ".codex", "auth.json");
+export function readCodexAuth(configDir?: string): OAuthTokenSet | undefined {
+  const sourceFile = path.join(configDir ? path.normalize(configDir) : codexDefaultConfigDir(), "auth.json");
   const record = readJsonRecord(sourceFile);
   if (!record) {
     return undefined;
@@ -618,8 +631,8 @@ function codexBackendRequestTransform(): Record<string, unknown> {
   };
 }
 
-export function readCodexLocalModelCatalog(): LocalAgentModelCatalog {
-  const modelsFile = path.join(codexHomeDir(), ".codex", "models_cache.json");
+export function readCodexLocalModelCatalog(configDir?: string): LocalAgentModelCatalog {
+  const modelsFile = path.join(configDir ? path.normalize(configDir) : codexDefaultConfigDir(), "models_cache.json");
   const record = readJsonRecord(modelsFile);
   const catalog = codexModelCatalogFromPayload(record);
   const uniqueModels = uniqueStrings([...catalog.models, ...codexDefaultModels]);
@@ -630,8 +643,11 @@ export function readCodexLocalModelCatalog(): LocalAgentModelCatalog {
   };
 }
 
-async function codexCandidateWithProbedModels(candidate: LocalAgentProviderCandidate): Promise<LocalAgentProviderCandidate> {
-  const catalog = await fetchCodexModelCatalog();
+async function codexCandidateWithProbedModels(
+  candidate: LocalAgentProviderCandidate,
+  configDir?: string
+): Promise<LocalAgentProviderCandidate> {
+  const catalog = await fetchCodexModelCatalog(configDir);
   if (catalog.models.length === 0) {
     return candidate;
   }
@@ -643,8 +659,8 @@ async function codexCandidateWithProbedModels(candidate: LocalAgentProviderCandi
   };
 }
 
-async function fetchCodexModelCatalog(): Promise<LocalAgentModelCatalog> {
-  const auth = readCodexAuth();
+async function fetchCodexModelCatalog(configDir?: string): Promise<LocalAgentModelCatalog> {
+  const auth = readCodexAuth(configDir);
   if (!auth?.accessToken) {
     throw new Error("Codex access token was not found.");
   }
@@ -899,6 +915,10 @@ function parseJson(text: string): unknown {
 
 export function codexModelCatalogFromPayloadForTest(payload: unknown): LocalAgentModelCatalog {
   return codexModelCatalogFromPayload(payload);
+}
+
+export function codexDefaultConfigDir(): string {
+  return path.join(codexHomeDir(), ".codex").normalize("NFC");
 }
 
 function codexHomeDir(): string {

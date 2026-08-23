@@ -20,6 +20,7 @@ import type {
   GatewayProviderProbeCandidateResult,
   GatewayProviderProtocol,
   GatewayMcpServerTransport,
+  LocalAgentProviderConfig,
   GatewayMcpStdioMessageMode,
   PluginDependency,
   PluginMarketplaceEntry,
@@ -101,6 +102,7 @@ export type AddProviderDraft = {
   credentialMode: "apiKey" | "pool";
   credentials: ProviderCredentialDraft[];
   icon: string;
+  localAgent?: LocalAgentProviderConfig;
   modelDescriptions?: Record<string, string>;
   modelDisplayNames?: Record<string, string>;
   modelMetadata?: Record<string, ProviderModelMetadata>;

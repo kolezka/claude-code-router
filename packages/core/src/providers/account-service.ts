@@ -16,6 +16,7 @@ import {
   zcodeDefaultBaseUrl
 } from "@ccr/core/agents/local-providers/service";
 import { grokAccessTokenExpired } from "@ccr/core/agents/local-providers/grok";
+import { sameLocalAgentConfigDir } from "@ccr/core/agents/local-providers/source";
 import { pluginService } from "@ccr/core/plugins/service";
 import { getUsageTotalsSince } from "@ccr/core/usage/store";
 import { findProviderPresetByBaseUrl, providerEndpointCanReceiveProviderApiKey } from "@ccr/core/providers/presets/index";
@@ -1493,10 +1494,16 @@ async function localAgentProviderAccountCredential(
 
     const key = readString((plugin as { key?: unknown }).key)?.toLowerCase() ?? "";
     if (key.includes("codex-oauth")) {
-      return await localCodexAccountCredential(plugin);
+      return await localCodexAccountCredential(
+        plugin,
+        localAgentProviderConfigDir(provider, "codex")
+      );
     }
     if (key.includes("claude-code-oauth")) {
-      return localClaudeCodeAccountCredential(plugin);
+      return localClaudeCodeAccountCredential(
+        plugin,
+        localAgentProviderConfigDir(provider, "claude-code")
+      );
     }
     if (key.includes("grok-cli-oauth")) {
       return await localGrokAccountCredential(plugin);
@@ -1512,11 +1519,14 @@ async function localAgentProviderAccountCredential(
     }
   }
   if (isLocalCodexProvider(provider)) {
-    return await localCodexAccountCredential({
-      codexOauth: { refreshIfMissingAccessToken: true },
-      key: "ccr-local-agent-codex-fallback-codex-oauth",
-      providerName: provider.name
-    });
+    return await localCodexAccountCredential(
+      {
+        codexOauth: { refreshIfMissingAccessToken: true },
+        key: "ccr-local-agent-codex-fallback-codex-oauth",
+        providerName: provider.name
+      },
+      localAgentProviderConfigDir(provider, "codex")
+    );
   }
   if (isLocalZcodeProvider(provider)) {
     const credential = readZcodeLocalProviderCredential();
@@ -1525,6 +1535,28 @@ async function localAgentProviderAccountCredential(
     }
   }
   return undefined;
+}
+
+function localAgentProviderConfigDir(
+  provider: GatewayProviderConfig,
+  kind: "claude-code" | "codex"
+): string | undefined {
+  return provider.localAgent?.kind === kind
+    ? provider.localAgent.configDir
+    : undefined;
+}
+
+function localAgentPluginSnapshotMatchesSource(
+  plugin: Record<string, unknown>,
+  kind: "claude-code" | "codex",
+  configDir: string | undefined
+): boolean {
+  if (!configDir) {
+    return true;
+  }
+  const localAgent = isRecord(plugin.localAgent) ? plugin.localAgent : undefined;
+  return readString(localAgent?.kind) === kind &&
+    sameLocalAgentConfigDir(readString(localAgent?.configDir), configDir);
 }
 
 function localAgentProviderPluginMatches(plugin: unknown, provider: GatewayProviderConfig): plugin is Record<string, unknown> {
@@ -1590,23 +1622,34 @@ function zcodeProviderTextMatches(values: Array<string | undefined>): boolean {
   ) && !text.includes("claude-code-router");
 }
 
-async function localCodexAccountCredential(plugin: Record<string, unknown>): Promise<LocalAgentAccountCredential> {
+async function localCodexAccountCredential(
+  plugin: Record<string, unknown>,
+  configDir?: string
+): Promise<LocalAgentAccountCredential> {
   const codexOauth = isRecord(plugin.codexOauth) ? plugin.codexOauth : {};
-  const codexAuth = readCodexAuth();
+  const codexAuth = readCodexAuth(configDir);
+  const usePluginSnapshot = localAgentPluginSnapshotMatchesSource(
+    plugin,
+    "codex",
+    configDir
+  );
   // Imported plugins contain a point-in-time access token. Prefer the live Codex
   // auth file so account checks follow tokens refreshed by Codex CLI/App.
   let apiKey =
     codexAuth?.accessToken ||
-    readString(codexOauth.accessToken) ||
-    readString(codexOauth.access_token);
+    (usePluginSnapshot
+      ? readString(codexOauth.accessToken) || readString(codexOauth.access_token)
+      : undefined);
   const refreshToken =
     codexAuth?.refreshToken ||
-    readString(codexOauth.refreshToken) ||
-    readString(codexOauth.refresh_token);
+    (usePluginSnapshot
+      ? readString(codexOauth.refreshToken) || readString(codexOauth.refresh_token)
+      : undefined);
   let accountId =
     codexAuth?.accountId ||
-    readString(codexOauth.accountId) ||
-    readString(codexOauth.account_id);
+    (usePluginSnapshot
+      ? readString(codexOauth.accountId) || readString(codexOauth.account_id)
+      : undefined);
   let isFedrampAccount = codexAuth?.isFedrampAccount;
   const currentClaims = codexTokenClaims(apiKey);
   accountId = accountId || currentClaims?.accountId;
@@ -1627,8 +1670,15 @@ async function localCodexAccountCredential(plugin: Record<string, unknown>): Pro
     }
   }
 
+  const pluginHeaders = localProviderPluginAuthHeaders(plugin);
   const headers = {
-    ...localProviderPluginAuthHeaders(plugin),
+    ...(usePluginSnapshot
+      ? pluginHeaders
+      : withoutHeaders(pluginHeaders, [
+          "authorization",
+          "ChatGPT-Account-Id",
+          "X-OpenAI-Fedramp"
+        ])),
     ...(accountId ? { "ChatGPT-Account-Id": accountId } : {}),
     ...(isFedrampAccount ? { "X-OpenAI-Fedramp": "true" } : {})
   };
@@ -1828,10 +1878,17 @@ function localBearerAccountCredential(plugin: Record<string, unknown>): { apiKey
   };
 }
 
-function localClaudeCodeAccountCredential(plugin: Record<string, unknown>): { apiKey?: string; headers?: Record<string, string> } {
+function localClaudeCodeAccountCredential(
+  plugin: Record<string, unknown>,
+  configDir?: string
+): { apiKey?: string; headers?: Record<string, string> } {
   const headers = localProviderPluginAuthHeaders(plugin);
-  const oauth = readClaudeCodeOauth();
-  const apiKey = oauth?.accessToken || readBearerToken(headers.authorization || headers.Authorization);
+  const oauth = readClaudeCodeOauth(configDir);
+  const apiKey = oauth?.accessToken || (
+    localAgentPluginSnapshotMatchesSource(plugin, "claude-code", configDir)
+      ? readBearerToken(headers.authorization || headers.Authorization)
+      : undefined
+  );
   return {
     apiKey,
     headers: withoutHeader(headers, "authorization")
@@ -1901,8 +1958,14 @@ function localProviderPluginAuthHeaders(plugin: Record<string, unknown>): Record
 }
 
 function withoutHeader(headers: Record<string, string>, header: string): Record<string, string> {
-  const normalized = header.toLowerCase();
-  return Object.fromEntries(Object.entries(headers).filter(([key]) => key.toLowerCase() !== normalized));
+  return withoutHeaders(headers, [header]);
+}
+
+function withoutHeaders(headers: Record<string, string>, names: string[]): Record<string, string> {
+  const normalized = new Set(names.map((name) => name.toLowerCase()));
+  return Object.fromEntries(
+    Object.entries(headers).filter(([key]) => !normalized.has(key.toLowerCase()))
+  );
 }
 
 function readBearerToken(value: string | undefined): string | undefined {

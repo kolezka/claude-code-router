@@ -437,6 +437,57 @@ test("codex catalog falls back to local Codex model cache metadata", () => {
   }
 });
 
+test("codex catalog reads fallback metadata from the provider CODEX_HOME", () => {
+  const previousCcrHome = process.env.CCR_INTERNAL_HOME_DIR;
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-codex-provider-metadata-"));
+  const processHome = path.join(root, "process-home");
+  const configDir = path.join(root, "codex-two");
+  try {
+    process.env.CCR_INTERNAL_HOME_DIR = processHome;
+    mkdirSync(path.join(processHome, ".codex"), { recursive: true });
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(path.join(processHome, ".codex", "models_cache.json"), JSON.stringify({
+      models: [{
+        default_reasoning_level: "low",
+        effective_context_window_percent: 81,
+        slug: "gpt-5-codex",
+        supported_reasoning_levels: [{ description: "Low", effort: "low" }]
+      }]
+    }));
+    writeFileSync(path.join(configDir, "models_cache.json"), JSON.stringify({
+      models: [{
+        default_reasoning_level: "high",
+        effective_context_window_percent: 93,
+        slug: "gpt-5-codex",
+        supported_reasoning_levels: [{ description: "High", effort: "high" }]
+      }]
+    }));
+
+    const model = catalogModelFor({
+      Providers: [
+        {
+          api_base_url: "https://chatgpt.com/backend-api/codex",
+          api_key: "ccr-local-agent-login",
+          localAgent: { configDir, kind: "codex" },
+          models: ["gpt-5-codex"],
+          name: "Codex Two",
+          type: "openai_responses"
+        }
+      ]
+    }, "Codex Two/gpt-5-codex");
+
+    assert.equal(model.default_reasoning_level, "high");
+    assert.equal(model.effective_context_window_percent, 93);
+  } finally {
+    if (previousCcrHome === undefined) {
+      delete process.env.CCR_INTERNAL_HOME_DIR;
+    } else {
+      process.env.CCR_INTERNAL_HOME_DIR = previousCcrHome;
+    }
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
 test("codex catalog enables native search for Gemini Interactions providers", () => {
   const model = catalogModelFor({
     Providers: [

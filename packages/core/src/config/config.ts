@@ -38,6 +38,7 @@ import type {
   GatewayProviderCapability,
   GatewayProviderCapabilityProtocol,
   GatewayProviderConfig,
+  LocalAgentProviderConfig,
   MediaToolsConfig,
   ObservabilityConfig,
   OverviewAccountCardSize,
@@ -1432,6 +1433,7 @@ function parseProviders(value: unknown): GatewayProviderConfig[] | undefined {
         extraHeaders: item.extraHeaders,
         icon: readString(item.icon),
         id: readString(item.id),
+        localAgent: parseLocalAgentProviderConfig(item.localAgent),
         enabled: item.enabled === false ? false : undefined,
         autoFetchModels: readBoolean(item.autoFetchModels ?? item.auto_fetch_models ?? item.autoRefreshModels ?? item.auto_refresh_models),
         autoFetchKnownModels: parseStringArray(item.autoFetchKnownModels ?? item.auto_fetch_known_models ?? item.autoRefreshKnownModels ?? item.auto_refresh_known_models),
@@ -1456,6 +1458,15 @@ function parseProviders(value: unknown): GatewayProviderConfig[] | undefined {
     .filter((item): item is GatewayProviderConfig => Boolean(item));
 
   return withProviderIds(providers);
+}
+
+function parseLocalAgentProviderConfig(value: unknown): LocalAgentProviderConfig | undefined {
+  if (!isObject(value)) {
+    return undefined;
+  }
+  const configDir = readString(value.configDir);
+  const kind = parseEnumValue(value.kind, ["claude-code", "codex"], undefined);
+  return configDir && kind ? { configDir, kind } : undefined;
 }
 
 function parseModelDescriptions(value: unknown, models: string[]): Record<string, string> | undefined {

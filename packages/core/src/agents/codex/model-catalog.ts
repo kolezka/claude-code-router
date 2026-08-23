@@ -344,7 +344,11 @@ function localCodexModelMetadataFor(provider: GatewayProviderConfig, model: stri
   if (!isLocalCodexProvider(provider)) {
     return undefined;
   }
-  return readCodexLocalModelCatalog().modelMetadata?.[model];
+  return readCodexLocalModelCatalog(
+    provider.localAgent?.kind === "codex"
+      ? provider.localAgent.configDir
+      : undefined
+  ).modelMetadata?.[model];
 }
 
 function isLocalCodexProvider(provider: GatewayProviderConfig): boolean {

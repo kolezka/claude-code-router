@@ -367,6 +367,64 @@ test("connectivity probe applies provider plugin auth for local agent imports", 
   assert.equal(report.results[0]?.supported, true);
 });
 
+test("connectivity probe reads live Claude Code auth from the provider configuration directory", async (t) => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-claude-probe-provider-source-"));
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  const previousFetch = globalThis.fetch;
+  fs.writeFileSync(path.join(configDir, ".credentials.json"), JSON.stringify({
+    claudeAiOauth: { accessToken: "selected-live-token" }
+  }));
+  Object.defineProperty(process, "platform", {
+    configurable: true,
+    value: "linux"
+  });
+
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const headers = new Headers(init?.headers);
+    const ok =
+      url.pathname === "/v1/messages" &&
+      headers.get("authorization") === "Bearer selected-live-token";
+    return new Response(JSON.stringify(ok ? { id: "ok" } : { error: { message: "Unauthorized" } }), {
+      headers: { "content-type": "application/json" },
+      status: ok ? 200 : 401
+    });
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    Object.defineProperty(process, "platform", platformDescriptor);
+    fs.rmSync(configDir, { force: true, recursive: true });
+  });
+
+  const report = await checkGatewayProviderConnectivity({
+    apiKey: "ccr-local-agent-login",
+    candidates: [{
+      baseUrl: "https://api.anthropic.com",
+      name: "Claude Code Two",
+      protocols: ["anthropic_messages"],
+      source: "custom"
+    }],
+    forceRefresh: true,
+    models: ["claude-sonnet-5"],
+    providerPlugins: [{
+      auth: {
+        headers: {
+          authorization: "Bearer stale-plugin-token",
+          "anthropic-beta": "oauth-2025-04-20"
+        },
+        removeHeaders: ["x-api-key"]
+      },
+      key: "ccr-local-agent-claude-code-two-claude-code-oauth",
+      localAgent: { configDir, kind: "claude-code" },
+      providerName: "Claude Code Two"
+    }],
+    protocols: ["anthropic_messages"]
+  });
+
+  assert.equal(report.passed.length, 1);
+  assert.equal(report.failed.length, 0);
+});
+
 test("connectivity probe applies provider plugin request transforms", async (t) => {
   const previousFetch = globalThis.fetch;
   let called = false;
@@ -655,6 +713,83 @@ test("connectivity probe prefers live Codex auth over saved OAuth plugin tokens"
   assert.equal(calls[0]?.authorization, `Bearer ${liveToken}`);
   assert.equal(calls[0]?.chatgptAccountId, "acct-live-file");
   assert.equal(calls[0]?.body?.max_output_tokens, undefined);
+});
+
+test("connectivity probe reads live Codex auth from the provider CODEX_HOME", async (t) => {
+  const processHome = useTemporaryCodexHome(t, "ccr-codex-probe-provider-home-");
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-codex-probe-provider-source-"));
+  const previousFetch = globalThis.fetch;
+  const defaultToken = jwt({
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct-default" },
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    scope: "api.connectors.read api.connectors.invoke"
+  });
+  const selectedToken = jwt({
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct-selected" },
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    scope: "api.connectors.read api.connectors.invoke"
+  });
+  const calls = [];
+
+  fs.mkdirSync(path.join(processHome, ".codex"), { recursive: true });
+  fs.writeFileSync(path.join(processHome, ".codex", "auth.json"), JSON.stringify({
+    tokens: { access_token: defaultToken, account_id: "acct-default" }
+  }));
+  fs.writeFileSync(path.join(configDir, "auth.json"), JSON.stringify({
+    tokens: { access_token: selectedToken, account_id: "acct-selected" }
+  }));
+
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const headers = new Headers(init?.headers);
+    calls.push({
+      authorization: headers.get("authorization"),
+      chatgptAccountId: headers.get("chatgpt-account-id"),
+      pathname: url.pathname
+    });
+    const ok =
+      headers.get("authorization") === `Bearer ${selectedToken}` &&
+      headers.get("chatgpt-account-id") === "acct-selected";
+    return new Response(JSON.stringify(ok ? { id: "ok" } : { error: { message: "Unauthorized" } }), {
+      headers: { "content-type": "application/json" },
+      status: ok ? 200 : 401
+    });
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    fs.rmSync(configDir, { force: true, recursive: true });
+    fs.rmSync(processHome, { force: true, recursive: true });
+  });
+
+  const report = await checkGatewayProviderConnectivity({
+    apiKey: "ccr-local-agent-login",
+    candidates: [{
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      name: "Codex Two",
+      protocols: ["openai_responses"],
+      source: "custom"
+    }],
+    forceRefresh: true,
+    models: ["gpt-5-codex"],
+    providerPlugins: [{
+      codexOauth: {
+        accessToken: defaultToken,
+        accountId: "acct-default"
+      },
+      key: "ccr-local-agent-codex-two-codex-oauth",
+      localAgent: { configDir, kind: "codex" },
+      providerName: "Codex Two"
+    }],
+    protocols: ["openai_responses"]
+  });
+
+  assert.equal(report.passed.length, 1);
+  assert.equal(report.failed.length, 0);
+  assert.deepEqual(calls, [{
+    authorization: `Bearer ${selectedToken}`,
+    chatgptAccountId: "acct-selected",
+    pathname: "/backend-api/codex/responses"
+  }]);
 });
 
 test("connectivity probe shares concurrent Codex OAuth refreshes", async (t) => {

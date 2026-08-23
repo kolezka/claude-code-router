@@ -157,6 +157,13 @@ export type GatewayMediaProtocol =
 
 export type GatewayProviderCapabilityProtocol = GatewayProviderProtocol | GatewayMediaProtocol;
 
+export type LocalAgentProviderSourceKind = "claude-code" | "codex";
+
+export type LocalAgentProviderConfig = {
+  configDir: string;
+  kind: LocalAgentProviderSourceKind;
+};
+
 export type GatewayProviderConfig = {
   account?: ProviderAccountConfig;
   api_base_url?: string;
@@ -172,6 +179,7 @@ export type GatewayProviderConfig = {
   extraHeaders?: unknown;
   icon?: string;
   id?: string;
+  localAgent?: LocalAgentProviderConfig;
   enabled?: boolean;
   autoFetchModels?: boolean;
   autoFetchKnownModels?: string[];
@@ -397,6 +405,7 @@ export type ProviderDeepLinkPayload = {
   baseUrl: string;
   capabilities?: GatewayProviderCapability[];
   icon?: string;
+  localAgent?: LocalAgentProviderConfig;
   modelDescriptions?: Record<string, string>;
   modelDisplayNames?: Record<string, string>;
   modelMetadata?: Record<string, ProviderModelMetadata>;
@@ -420,15 +429,17 @@ export type ProviderManifestFetchResult = {
   url: string;
 };
 
-export type LocalAgentProviderKind = "claude-code" | "codex" | "grok" | "kimi" | "opencode" | "zcode";
+export type LocalAgentProviderKind = LocalAgentProviderSourceKind | "grok" | "kimi" | "opencode" | "zcode";
 
 export type LocalAgentProviderStatus = "available" | "locked" | "missing";
 
 export type LocalAgentProviderCandidate = {
+  defaultConfigDir?: string;
   detail?: string;
   id: string;
   importable: boolean;
   kind: LocalAgentProviderKind;
+  localAgent?: LocalAgentProviderConfig;
   modelDisplayNames?: Record<string, string>;
   modelMetadata?: Record<string, ProviderModelMetadata>;
   models: string[];
@@ -438,7 +449,13 @@ export type LocalAgentProviderCandidate = {
   status: LocalAgentProviderStatus;
 };
 
+export type LocalAgentProviderScanRequest = {
+  configDir: string;
+  kind: LocalAgentProviderSourceKind;
+};
+
 export type LocalAgentProviderImportRequest = {
+  configDir?: string;
   id: string;
   providerNames?: string[];
 };
@@ -450,6 +467,7 @@ export type LocalAgentProviderImportResult = {
 };
 
 export type LocalAgentProviderProbeRequest = {
+  configDir?: string;
   forceRefresh?: boolean;
   id: string;
 };

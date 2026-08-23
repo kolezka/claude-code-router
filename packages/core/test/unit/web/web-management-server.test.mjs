@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -61,6 +61,38 @@ test("web RPC ignores Origin and Referer when the auth token is valid", async ()
     assert.equal(response.status, 200);
     assert.equal(payload.ok, true);
     assert.equal(payload.value.name, "Claude Code Router");
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("web RPC forwards a local provider scan source", async () => {
+  const { startWebManagementServer } = await import("@ccr/core/web/management-server.ts");
+  const authToken = "test-web-auth-token";
+  const configDir = path.join(runtimeRoot, "codex-two");
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(path.join(configDir, "auth.json"), JSON.stringify({
+    tokens: { refresh_token: "second-refresh-token" }
+  }));
+  const runtime = await startWebManagementServer({
+    authToken,
+    host: "127.0.0.1",
+    port: 0,
+    startGateway: false
+  });
+
+  try {
+    const payload = await rpc(runtime.url, authToken, "getLocalAgentProviderCandidates", [{
+      configDir,
+      kind: "codex"
+    }]);
+
+    assert.equal(payload.ok, true);
+    assert.equal(payload.value.length, 1);
+    assert.deepEqual(payload.value[0].localAgent, {
+      configDir,
+      kind: "codex"
+    });
   } finally {
     await runtime.close();
   }

@@ -13,6 +13,7 @@ import type {
   GatewayProviderProtocol
 } from "@ccr/core/contracts/app";
 import { codexDefaultBaseUrl, readCodexAuth } from "@ccr/core/agents/local-providers/codex";
+import { readClaudeCodeOauth } from "@ccr/core/agents/local-providers/claude-code";
 import { localAgentProviderApiKey } from "@ccr/core/agents/local-providers/shared";
 import { findProviderPresetByBaseUrl, providerApiKeySafetyIssue } from "@ccr/core/providers/presets/index";
 import { getProviderCatalogModels } from "@ccr/core/providers/model-catalog";
@@ -887,13 +888,23 @@ async function providerProbeAuthRequest(
   const auth = providerPlugins
     .map(providerPluginAuth)
     .find((item): item is Record<string, unknown> => Boolean(item));
-  let codexOauth = providerPlugins
-    .map(providerPluginCodexOauth)
-    .find((item): item is Record<string, unknown> => Boolean(item));
+  const claudeCodePlugin = providerPlugins.find((plugin) =>
+    Boolean(providerPluginLocalAgentConfigDir(plugin, "claude-code"))
+  );
+  const codexPlugin = providerPlugins.find((plugin) => Boolean(providerPluginCodexOauth(plugin)));
+  const liveClaudeCodeAccessToken = providerProbeLiveClaudeCodeAccessToken(
+    apiKey,
+    providerPluginLocalAgentConfigDir(claudeCodePlugin, "claude-code")
+  );
+  let codexOauth = providerPluginCodexOauth(codexPlugin);
   let requestTransform = providerPlugins
     .map(providerPluginRequest)
     .find((item): item is Record<string, unknown> => Boolean(item));
-  const liveCodexAuth = providerProbeLiveCodexOauth(url, apiKey);
+  const liveCodexAuth = providerProbeLiveCodexOauth(
+    url,
+    apiKey,
+    providerPluginLocalAgentConfigDir(codexPlugin, "codex")
+  );
   if (codexOauth && liveCodexAuth) {
     codexOauth = {
       ...codexOauth,
@@ -910,6 +921,19 @@ async function providerProbeAuthRequest(
 
   if (auth) {
     request = providerProbeStaticAuthRequest(request.url, request.init, auth);
+  }
+
+  if (liveClaudeCodeAccessToken) {
+    const headers = new Headers(request.init.headers);
+    headers.delete("x-api-key");
+    headers.set("authorization", `Bearer ${liveClaudeCodeAccessToken}`);
+    request = {
+      ...request,
+      init: {
+        ...request.init,
+        headers
+      }
+    };
   }
 
   if (codexOauth) {
@@ -935,15 +959,25 @@ async function providerProbeAuthRequest(
   return request;
 }
 
+function providerProbeLiveClaudeCodeAccessToken(
+  apiKey: string | undefined,
+  configDir?: string
+): string | undefined {
+  return apiKey === localAgentProviderApiKey && configDir
+    ? readClaudeCodeOauth(configDir)?.accessToken
+    : undefined;
+}
+
 function providerProbeLiveCodexOauth(
   url: string,
-  apiKey: string | undefined
+  apiKey: string | undefined,
+  configDir?: string
 ): { codexOauth: Record<string, unknown>; isFedrampAccount?: boolean; request: Record<string, unknown> } | undefined {
   if (apiKey !== localAgentProviderApiKey || !isCodexProbeEndpoint(url)) {
     return undefined;
   }
 
-  const auth = readCodexAuth();
+  const auth = readCodexAuth(configDir);
   if (!auth?.accessToken && !auth?.refreshToken) {
     return undefined;
   }
@@ -1232,6 +1266,18 @@ function providerPluginCodexOauth(plugin: unknown): Record<string, unknown> | un
     return undefined;
   }
   return plugin.codexOauth;
+}
+
+function providerPluginLocalAgentConfigDir(
+  plugin: unknown,
+  kind: "claude-code" | "codex"
+): string | undefined {
+  if (!isRecord(plugin) || !isRecord(plugin.localAgent)) {
+    return undefined;
+  }
+  return readString(plugin.localAgent.kind) === kind
+    ? readString(plugin.localAgent.configDir)
+    : undefined;
 }
 
 function providerPluginRequest(plugin: unknown): Record<string, unknown> | undefined {

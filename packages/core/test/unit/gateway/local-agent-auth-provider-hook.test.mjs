@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -154,6 +155,554 @@ test("Claude Code local agent auth hook re-reads the on-disk access token on eve
       });
     });
   });
+});
+
+test("Claude Code request auth hook reads the provider configuration directory", async () => {
+  await withClaudeCodeHome(async (home) => {
+    await withPlatform("linux", async () => {
+      writeClaudeCredentials(home, { accessToken: "default-access-token" });
+      const configDir = path.join(home, ".claude-two");
+      writeClaudeCredentialsAt(configDir, { accessToken: "second-access-token" });
+      const plugin = claudeCodeOauthProviderPlugin();
+      plugin.localAgent = { configDir, kind: "claude-code" };
+      const [hook] = createGatewayPlugin({
+        config: { providerPlugins: [plugin] }
+      }).providerHooks;
+
+      const result = await hook.authenticate({
+        upstreamRequest: {
+          headers: {},
+          method: "POST",
+          url: "https://api.anthropic.com/v1/messages"
+        }
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(result.value.headers.authorization, "Bearer second-access-token");
+    });
+  });
+});
+
+test("core gateway compiler isolates Claude Code runtime credentials by provider configuration directory", async () => {
+  await withClaudeCodeHome(async (home) => {
+    await withPlatform("linux", async () => {
+      const firstConfigDir = path.join(home, ".claude-one");
+      const secondConfigDir = path.join(home, ".claude-two");
+      writeClaudeCredentialsAt(firstConfigDir, { accessToken: "first-live-access-token" });
+      writeClaudeCredentialsAt(secondConfigDir, { accessToken: "second-live-access-token" });
+
+      const firstPlugin = claudeCodeOauthProviderPlugin();
+      firstPlugin.key = "ccr-local-agent-claude-one-claude-code-oauth";
+      firstPlugin.providerName = "Claude One";
+      firstPlugin.auth.headers.authorization = "Bearer first-stale-access-token";
+      firstPlugin.localAgent = { configDir: secondConfigDir, kind: "claude-code" };
+      const secondPlugin = claudeCodeOauthProviderPlugin();
+      secondPlugin.key = "ccr-local-agent-claude-two-claude-code-oauth";
+      secondPlugin.providerName = "Claude Two";
+      secondPlugin.auth.headers.authorization = "Bearer second-stale-access-token";
+      secondPlugin.localAgent = { configDir: firstConfigDir, kind: "claude-code" };
+
+      const config = createDefaultAppConfig();
+      config.providerPlugins = [firstPlugin, secondPlugin];
+      config.Providers = [
+        localClaudeProvider("claude-one", "Claude One", firstConfigDir),
+        localClaudeProvider("claude-two", "Claude Two", secondConfigDir)
+      ];
+
+      const compiled = await compileCoreGatewayConfig(
+        config,
+        "raw-trace-token",
+        "billing-usage-token",
+        "core-auth-token"
+      );
+      const plugins = compiled.providerPlugins.filter((plugin) =>
+        plugin.key === firstPlugin.key || plugin.key === secondPlugin.key
+      );
+      const firstCompiled = plugins.find((plugin) => plugin.key === firstPlugin.key);
+      const secondCompiled = plugins.find((plugin) => plugin.key === secondPlugin.key);
+
+      assert.equal(firstCompiled.auth.headers.authorization, "Bearer first-live-access-token");
+      assert.deepEqual(firstCompiled.localAgent, {
+        configDir: firstConfigDir,
+        kind: "claude-code"
+      });
+      assert.equal(secondCompiled.auth.headers.authorization, "Bearer second-live-access-token");
+      assert.deepEqual(secondCompiled.localAgent, {
+        configDir: secondConfigDir,
+        kind: "claude-code"
+      });
+    });
+  });
+});
+
+test("core gateway compiler reads one Claude Code source once for its provider plugins", async () => {
+  await withClaudeCodeHome(async (home) => {
+    await withPlatform("linux", async () => {
+      const configDir = path.join(home, ".claude-two");
+      const credentialFile = writeClaudeCredentialsAt(configDir, {
+        accessToken: "second-live-access-token"
+      });
+      const plugin = claudeCodeOauthProviderPlugin();
+      const internalPlugin = {
+        ...plugin,
+        auth: {
+          ...plugin.auth,
+          headers: { ...plugin.auth.headers }
+        },
+        key: `${plugin.key}-internal`
+      };
+      const config = createDefaultAppConfig();
+      config.providerPlugins = [plugin, internalPlugin];
+      config.Providers = [
+        localClaudeProvider("claude-code-api", "Claude Code API", configDir)
+      ];
+
+      await withReadFileCount(credentialFile, async (readCount) => {
+        await compileCoreGatewayConfig(
+          config,
+          "raw-trace-token",
+          "billing-usage-token",
+          "core-auth-token"
+        );
+
+        assert.equal(readCount(), 1);
+      });
+    });
+  });
+});
+
+test("core gateway compiler drops a Claude Code credential snapshot when the provider source changes", async () => {
+  await withClaudeCodeHome(async (home) => {
+    await withPlatform("linux", async () => {
+      const staleConfigDir = path.join(home, ".claude-one");
+      const currentConfigDir = path.join(home, ".claude-two");
+      mkdirSync(staleConfigDir, { recursive: true });
+      mkdirSync(currentConfigDir, { recursive: true });
+
+      const plugin = claudeCodeOauthProviderPlugin();
+      plugin.providerName = "Claude One";
+      plugin.localAgent = {
+        configDir: staleConfigDir,
+        kind: "claude-code"
+      };
+      const config = createDefaultAppConfig();
+      config.providerPlugins = [plugin];
+      config.Providers = [
+        localClaudeProvider("claude-one", "Claude One", currentConfigDir)
+      ];
+
+      const compiled = await compileCoreGatewayConfig(
+        config,
+        "raw-trace-token",
+        "billing-usage-token",
+        "core-auth-token"
+      );
+      const compiledPlugin = compiled.providerPlugins.find((item) =>
+        item.key === plugin.key
+      );
+
+      assert.equal(
+        compiledPlugin.auth.headers.authorization,
+        undefined
+      );
+      assert.deepEqual(
+        compiledPlugin.auth.headers["anthropic-beta"],
+        {
+          default: "oauth-2025-04-20",
+          from: "request.headers.anthropic-beta"
+        }
+      );
+      assert.deepEqual(compiledPlugin.localAgent, {
+        configDir: currentConfigDir,
+        kind: "claude-code"
+      });
+
+      const [hook] = createGatewayPlugin({
+        config: { providerPlugins: [compiledPlugin] }
+      }).providerHooks;
+      const result = await hook.authenticate({
+        upstreamRequest: {
+          headers: {},
+          method: "POST",
+          url: "https://api.anthropic.com/v1/messages"
+        }
+      });
+      assert.deepEqual(result, {
+        error: "Claude Code access token was not found.",
+        ok: false
+      });
+    });
+  });
+});
+
+test("core gateway compiler preserves a Claude Code snapshot for equivalent source paths", async () => {
+  await withClaudeCodeHome(async (home) => {
+    await withPlatform("linux", async () => {
+      const configDir = path.join(home, ".claude-two");
+      mkdirSync(configDir, { recursive: true });
+
+      const plugin = claudeCodeOauthProviderPlugin();
+      plugin.localAgent = {
+        configDir: `${configDir}${path.sep}.`,
+        kind: "claude-code"
+      };
+      const config = createDefaultAppConfig();
+      config.providerPlugins = [plugin];
+      config.Providers = [
+        localClaudeProvider("claude-code-api", "Claude Code API", configDir)
+      ];
+
+      const compiled = await compileCoreGatewayConfig(
+        config,
+        "raw-trace-token",
+        "billing-usage-token",
+        "core-auth-token"
+      );
+      const compiledPlugin = compiled.providerPlugins.find((item) =>
+        item.key === plugin.key
+      );
+
+      assert.equal(
+        compiledPlugin.auth.headers.authorization,
+        "Bearer stale-imported-access-token"
+      );
+      assert.deepEqual(compiledPlugin.localAgent, {
+        configDir,
+        kind: "claude-code"
+      });
+    });
+  });
+});
+
+test("core gateway compiler isolates Codex runtime credentials by provider CODEX_HOME", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-codex-compiler-test-"));
+  const firstConfigDir = path.join(root, "codex-one");
+  const secondConfigDir = path.join(root, "codex-two");
+  writeCodexAuth(firstConfigDir, "first-live-access-token");
+  writeCodexAuth(secondConfigDir, "second-live-access-token");
+  const previousInternalHome = process.env.CCR_INTERNAL_HOME_DIR;
+  process.env.CCR_INTERNAL_HOME_DIR = path.join(root, "process-home");
+
+  try {
+    const firstPlugin = codexOauthProviderPlugin("codex-one", "Codex One", "first-stale-access-token");
+    firstPlugin.localAgent = { configDir: secondConfigDir, kind: "codex" };
+    const secondPlugin = codexOauthProviderPlugin("codex-two", "Codex Two", "second-stale-access-token");
+    secondPlugin.localAgent = { configDir: firstConfigDir, kind: "codex" };
+    const config = createDefaultAppConfig();
+    config.providerPlugins = [firstPlugin, secondPlugin];
+    config.Providers = [
+      localCodexProvider("codex-one", "Codex One", firstConfigDir),
+      localCodexProvider("codex-two", "Codex Two", secondConfigDir)
+    ];
+
+    const compiled = await compileCoreGatewayConfig(
+      config,
+      "raw-trace-token",
+      "billing-usage-token",
+      "core-auth-token"
+    );
+    const firstCompiled = compiled.providerPlugins.find((plugin) => plugin.key === firstPlugin.key);
+    const secondCompiled = compiled.providerPlugins.find((plugin) => plugin.key === secondPlugin.key);
+
+    assert.equal(firstCompiled.codexOauth.accessToken, "first-live-access-token");
+    assert.deepEqual(firstCompiled.localAgent, {
+      configDir: firstConfigDir,
+      kind: "codex"
+    });
+    assert.equal(secondCompiled.codexOauth.accessToken, "second-live-access-token");
+    assert.deepEqual(secondCompiled.localAgent, {
+      configDir: secondConfigDir,
+      kind: "codex"
+    });
+  } finally {
+    restoreEnv("CCR_INTERNAL_HOME_DIR", previousInternalHome);
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("core gateway compiler reads one Codex source once for its provider plugins", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-codex-compiler-test-"));
+  const configDir = path.join(root, "codex-two");
+  const authFile = path.join(configDir, "auth.json");
+  writeCodexAuth(configDir, "second-live-access-token");
+  const previousInternalHome = process.env.CCR_INTERNAL_HOME_DIR;
+  process.env.CCR_INTERNAL_HOME_DIR = path.join(root, "process-home");
+
+  try {
+    const plugin = codexOauthProviderPlugin(
+      "codex-two",
+      "Codex Two",
+      "stale-access-token"
+    );
+    const internalPlugin = {
+      ...plugin,
+      codexOauth: { ...plugin.codexOauth },
+      key: `${plugin.key}-internal`
+    };
+    const config = createDefaultAppConfig();
+    config.providerPlugins = [plugin, internalPlugin];
+    config.Providers = [
+      localCodexProvider("codex-two", "Codex Two", configDir)
+    ];
+
+    await withReadFileCount(authFile, async (readCount) => {
+      await compileCoreGatewayConfig(
+        config,
+        "raw-trace-token",
+        "billing-usage-token",
+        "core-auth-token"
+      );
+
+      assert.equal(readCount(), 1);
+    });
+  } finally {
+    restoreEnv("CCR_INTERNAL_HOME_DIR", previousInternalHome);
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("core gateway compiler does not read Codex credentials to recover a configured plugin", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-codex-compiler-test-"));
+  const configDir = path.join(root, "codex-two");
+  const authFile = path.join(configDir, "auth.json");
+  writeCodexAuth(configDir, "second-live-access-token");
+  const previousInternalHome = process.env.CCR_INTERNAL_HOME_DIR;
+  process.env.CCR_INTERNAL_HOME_DIR = path.join(root, "process-home");
+
+  try {
+    const plugin = {
+      ...codexOauthProviderPlugin(
+        "codex-two",
+        "Codex Two",
+        "stale-access-token"
+      ),
+      enabled: false
+    };
+    const config = createDefaultAppConfig();
+    config.providerPlugins = [plugin];
+    config.Providers = [
+      localCodexProvider("codex-two", "Codex Two", configDir)
+    ];
+
+    await withReadFileCount(authFile, async (readCount) => {
+      await compileCoreGatewayConfig(
+        config,
+        "raw-trace-token",
+        "billing-usage-token",
+        "core-auth-token"
+      );
+
+      assert.equal(readCount(), 0);
+    });
+  } finally {
+    restoreEnv("CCR_INTERNAL_HOME_DIR", previousInternalHome);
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("core gateway compiler prefers an exact local provider name over another provider capability alias", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-codex-compiler-test-"));
+  const exactConfigDir = path.join(root, "exact-provider");
+  const aliasConfigDir = path.join(root, "alias-provider");
+  mkdirSync(exactConfigDir, { recursive: true });
+  mkdirSync(aliasConfigDir, { recursive: true });
+  const previousInternalHome = process.env.CCR_INTERNAL_HOME_DIR;
+  process.env.CCR_INTERNAL_HOME_DIR = path.join(root, "process-home");
+
+  try {
+    const exactProvider = localCodexProvider(
+      "exact-provider",
+      "Alias Provider::openai_responses",
+      exactConfigDir
+    );
+    const aliasProvider = {
+      ...localCodexProvider("alias-provider", "Alias Provider", aliasConfigDir),
+      capabilities: [{
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        type: "openai_responses"
+      }]
+    };
+    const plugin = codexOauthProviderPlugin(
+      "exact-provider",
+      exactProvider.name,
+      "stale-access-token"
+    );
+    plugin.localAgent = { configDir: exactConfigDir, kind: "codex" };
+    const config = createDefaultAppConfig();
+    config.providerPlugins = [plugin];
+    config.Providers = [aliasProvider, exactProvider];
+
+    const compiled = await compileCoreGatewayConfig(
+      config,
+      "raw-trace-token",
+      "billing-usage-token",
+      "core-auth-token"
+    );
+    const compiledPlugin = compiled.providerPlugins.find((item) => item.key === plugin.key);
+
+    assert.deepEqual(compiledPlugin.localAgent, {
+      configDir: exactConfigDir,
+      kind: "codex"
+    });
+    assert.equal(compiledPlugin.providerName, "exact-provider");
+  } finally {
+    restoreEnv("CCR_INTERNAL_HOME_DIR", previousInternalHome);
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("core gateway compiler uses the local plugin key when its provider alias matches another display name", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-codex-compiler-test-"));
+  const exactConfigDir = path.join(root, "exact-provider");
+  const aliasConfigDir = path.join(root, "alias-provider");
+  mkdirSync(exactConfigDir, { recursive: true });
+  mkdirSync(aliasConfigDir, { recursive: true });
+  const previousInternalHome = process.env.CCR_INTERNAL_HOME_DIR;
+  process.env.CCR_INTERNAL_HOME_DIR = path.join(root, "process-home");
+
+  try {
+    const exactProvider = localCodexProvider(
+      "exact-provider",
+      "Alias Provider::openai_responses",
+      exactConfigDir
+    );
+    const aliasProvider = {
+      ...localCodexProvider("alias-provider", "Alias Provider", aliasConfigDir),
+      capabilities: [{
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        type: "openai_responses"
+      }]
+    };
+    const plugin = codexOauthProviderPlugin(
+      "alias-provider",
+      "Alias Provider::openai_responses",
+      "stale-access-token"
+    );
+    plugin.localAgent = { configDir: aliasConfigDir, kind: "codex" };
+    const config = createDefaultAppConfig();
+    config.providerPlugins = [plugin];
+    config.Providers = [exactProvider, aliasProvider];
+
+    const compiled = await compileCoreGatewayConfig(
+      config,
+      "raw-trace-token",
+      "billing-usage-token",
+      "core-auth-token"
+    );
+    const compiledPlugin = compiled.providerPlugins.find((item) => item.key === plugin.key);
+
+    assert.deepEqual(compiledPlugin.localAgent, {
+      configDir: aliasConfigDir,
+      kind: "codex"
+    });
+    assert.equal(compiledPlugin.providerName, "alias-provider::openai_responses");
+  } finally {
+    restoreEnv("CCR_INTERNAL_HOME_DIR", previousInternalHome);
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("core gateway compiler drops Codex credential snapshots when the provider source changes", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-codex-compiler-test-"));
+  const staleConfigDir = path.join(root, "codex-one");
+  const currentConfigDir = path.join(root, "codex-two");
+  mkdirSync(staleConfigDir, { recursive: true });
+  mkdirSync(currentConfigDir, { recursive: true });
+  const previousInternalHome = process.env.CCR_INTERNAL_HOME_DIR;
+  process.env.CCR_INTERNAL_HOME_DIR = path.join(root, "process-home");
+
+  try {
+    const plugin = codexOauthProviderPlugin(
+      "codex-one",
+      "Codex One",
+      "stale-access-token"
+    );
+    plugin.codexOauth.accountId = "stale-account-id";
+    plugin.codexOauth.account_id = "stale-account-id-alias";
+    plugin.codexOauth.access_token = "stale-access-token-alias";
+    plugin.codexOauth.refreshToken = "stale-refresh-token";
+    plugin.codexOauth.refresh_token = "stale-refresh-token-alias";
+    plugin.auth = {
+      headers: {
+        Authorization: "Bearer stale-header-access-token",
+        "ChatGPT-Account-Id": "stale-header-account-id",
+        "X-OpenAI-Fedramp": "true",
+        "x-preserved-header": "preserved"
+      }
+    };
+    plugin.localAgent = { configDir: staleConfigDir, kind: "codex" };
+    const config = createDefaultAppConfig();
+    config.providerPlugins = [plugin];
+    config.Providers = [
+      localCodexProvider("codex-one", "Codex One", currentConfigDir)
+    ];
+
+    const compiled = await compileCoreGatewayConfig(
+      config,
+      "raw-trace-token",
+      "billing-usage-token",
+      "core-auth-token"
+    );
+    const compiledPlugin = compiled.providerPlugins.find((item) =>
+      item.key === plugin.key
+    );
+
+    assert.equal(compiledPlugin.codexOauth.accessToken, undefined);
+    assert.equal(compiledPlugin.codexOauth.access_token, undefined);
+    assert.equal(compiledPlugin.codexOauth.refreshToken, undefined);
+    assert.equal(compiledPlugin.codexOauth.refresh_token, undefined);
+    assert.equal(compiledPlugin.codexOauth.accountId, undefined);
+    assert.equal(compiledPlugin.codexOauth.account_id, undefined);
+    assert.equal(compiledPlugin.codexOauth.refreshIfMissingAccessToken, true);
+    assert.equal(compiledPlugin.codexOauth.required, true);
+    assert.equal(compiledPlugin.auth.headers.Authorization, undefined);
+    assert.equal(compiledPlugin.auth.headers["ChatGPT-Account-Id"], undefined);
+    assert.equal(compiledPlugin.auth.headers["X-OpenAI-Fedramp"], undefined);
+    assert.equal(
+      compiledPlugin.auth.headers["x-preserved-header"],
+      "preserved"
+    );
+    assert.deepEqual(compiledPlugin.localAgent, {
+      configDir: currentConfigDir,
+      kind: "codex"
+    });
+  } finally {
+    restoreEnv("CCR_INTERNAL_HOME_DIR", previousInternalHome);
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("core gateway compiler recovers a missing Codex plugin from the provider CODEX_HOME", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-codex-compiler-test-"));
+  const configDir = path.join(root, "codex-two");
+  writeCodexAuth(configDir, "second-live-access-token");
+  const previousInternalHome = process.env.CCR_INTERNAL_HOME_DIR;
+  process.env.CCR_INTERNAL_HOME_DIR = path.join(root, "process-home");
+
+  try {
+    const config = createDefaultAppConfig();
+    config.providerPlugins = [];
+    config.Providers = [localCodexProvider("codex-two", "Codex Two", configDir)];
+
+    const compiled = await compileCoreGatewayConfig(
+      config,
+      "raw-trace-token",
+      "billing-usage-token",
+      "core-auth-token"
+    );
+    const plugin = compiled.providerPlugins.find((item) =>
+      item.key.includes("codex-oauth-recovered")
+    );
+
+    assert.equal(plugin.codexOauth.accessToken, "second-live-access-token");
+    assert.deepEqual(plugin.localAgent, {
+      configDir,
+      kind: "codex"
+    });
+  } finally {
+    restoreEnv("CCR_INTERNAL_HOME_DIR", previousInternalHome);
+    rmSync(root, { force: true, recursive: true });
+  }
 });
 
 test("Grok local agent request hook removes unsupported Responses tools and stale tool choice", () => {
@@ -348,11 +897,76 @@ async function withFakeSecurityScript(body, run) {
 }
 
 function writeClaudeCredentials(home, credentials) {
-  const directory = path.join(home, ".claude");
+  return writeClaudeCredentialsAt(path.join(home, ".claude"), credentials);
+}
+
+function writeClaudeCredentialsAt(directory, credentials) {
   const credentialFile = path.join(directory, ".credentials.json");
   mkdirSync(directory, { recursive: true });
   writeFileSync(credentialFile, JSON.stringify(credentials, null, 2));
   return credentialFile;
+}
+
+function localClaudeProvider(id, name, configDir) {
+  return {
+    api_base_url: "https://api.anthropic.com",
+    api_key: "ccr-local-agent-login",
+    id,
+    localAgent: { configDir, kind: "claude-code" },
+    models: ["claude-sonnet-5"],
+    name,
+    type: "anthropic_messages"
+  };
+}
+
+function codexOauthProviderPlugin(id, providerName, accessToken) {
+  return {
+    codexOauth: {
+      accessToken,
+      refreshIfMissingAccessToken: true,
+      required: true
+    },
+    key: `ccr-local-agent-${id}-codex-oauth`,
+    providerName
+  };
+}
+
+function localCodexProvider(id, name, configDir) {
+  return {
+    api_base_url: "https://chatgpt.com/backend-api/codex",
+    api_key: "ccr-local-agent-login",
+    id,
+    localAgent: { configDir, kind: "codex" },
+    models: ["gpt-5-codex"],
+    name,
+    type: "openai_responses"
+  };
+}
+
+function writeCodexAuth(configDir, accessToken) {
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(path.join(configDir, "auth.json"), JSON.stringify({
+    tokens: { access_token: accessToken }
+  }));
+}
+
+async function withReadFileCount(sourceFile, run) {
+  const originalReadFileSync = fs.readFileSync;
+  const normalizedSourceFile = path.resolve(sourceFile);
+  let count = 0;
+  fs.readFileSync = function countedReadFileSync(file, ...args) {
+    if (path.resolve(String(file)) === normalizedSourceFile) {
+      count += 1;
+    }
+    return originalReadFileSync.call(this, file, ...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    await run(() => count);
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+    syncBuiltinESMExports();
+  }
 }
 
 async function withGrokHome(t, run) {

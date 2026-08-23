@@ -349,6 +349,82 @@ test("Codex local account credential falls back to the live auth file when plugi
   assert.equal(credential?.headers?.["ChatGPT-Account-Id"], "acct-live");
 });
 
+test("Codex local account credential reads the provider CODEX_HOME", async (t) => {
+  const home = useTemporaryCodexHome(t, "ccr-codex-account-provider-home-");
+  const defaultToken = jwt({
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct-default" },
+    exp: Math.floor(Date.now() / 1000) + 3600
+  });
+  const selectedToken = jwt({
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct-selected" },
+    exp: Math.floor(Date.now() / 1000) + 3600
+  });
+  writeFileSync(path.join(home, ".codex", "auth.json"), JSON.stringify({
+    tokens: { access_token: defaultToken }
+  }));
+  const configDir = path.join(home, "codex-two");
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(path.join(configDir, "auth.json"), JSON.stringify({
+    tokens: { access_token: selectedToken }
+  }));
+
+  const credential = await localAgentProviderAccountCredentialForTest({
+    providerPlugins: []
+  }, {
+    api_base_url: codexDefaultBaseUrl,
+    api_key: localAgentProviderApiKey,
+    id: "codex-api",
+    localAgent: { configDir, kind: "codex" },
+    models: ["gpt-5-codex"],
+    name: "Codex API",
+    type: "openai_responses"
+  });
+
+  assert.equal(credential?.apiKey, selectedToken);
+  assert.equal(credential?.headers?.["ChatGPT-Account-Id"], "acct-selected");
+});
+
+test("Codex local account credential drops a plugin snapshot when the provider source changes", async (t) => {
+  const home = useTemporaryCodexHome(t, "ccr-codex-account-changed-source-");
+  const staleConfigDir = path.join(home, "codex-one");
+  const currentConfigDir = path.join(home, "codex-two");
+  mkdirSync(staleConfigDir, { recursive: true });
+  mkdirSync(currentConfigDir, { recursive: true });
+  const staleToken = jwt({
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct-stale" },
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    scope: "api.connectors.read api.connectors.invoke"
+  });
+
+  const credential = await localAgentProviderAccountCredentialForTest({
+    providerPlugins: [
+      {
+        auth: { headers: { "X-OpenAI-Fedramp": "true" } },
+        codexOauth: {
+          accessToken: staleToken,
+          accountId: "acct-stale",
+          refreshToken: "refresh-stale"
+        },
+        key: "ccr-local-agent-codex-api-codex-oauth",
+        localAgent: { configDir: staleConfigDir, kind: "codex" },
+        providerName: "Codex API"
+      }
+    ]
+  }, {
+    api_base_url: codexDefaultBaseUrl,
+    api_key: localAgentProviderApiKey,
+    id: "codex-api",
+    localAgent: { configDir: currentConfigDir, kind: "codex" },
+    models: ["gpt-5-codex"],
+    name: "Codex API",
+    type: "openai_responses"
+  });
+
+  assert.equal(credential?.apiKey, undefined);
+  assert.equal(credential?.headers?.["ChatGPT-Account-Id"], undefined);
+  assert.equal(credential?.headers?.["X-OpenAI-Fedramp"], undefined);
+});
+
 test("Claude Code local account credential prefers live macOS Keychain token", { skip: process.platform === "win32" }, async (t) => {
   const home = useTemporaryHome(t, "ccr-claude-code-account-live-keychain-");
   usePlatform(t, "darwin");
@@ -384,6 +460,124 @@ test("Claude Code local account credential prefers live macOS Keychain token", {
   assert.equal(credential?.apiKey, "keychain-account-token");
   assert.equal(credential?.headers?.authorization, undefined);
   assert.equal(credential?.headers?.["anthropic-beta"], "oauth-2025-04-20");
+});
+
+test("Claude Code local account credential reads the provider configuration directory", async (t) => {
+  const home = useTemporaryHome(t, "ccr-claude-code-account-provider-home-");
+  usePlatform(t, "linux");
+  const defaultConfigDir = path.join(home, ".claude");
+  const configDir = path.join(home, ".claude-two");
+  mkdirSync(defaultConfigDir, { recursive: true });
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(path.join(defaultConfigDir, ".credentials.json"), JSON.stringify({
+    claudeAiOauth: { accessToken: "default-access-token" }
+  }));
+  writeFileSync(path.join(configDir, ".credentials.json"), JSON.stringify({
+    claudeAiOauth: { accessToken: "second-access-token" }
+  }));
+
+  const credential = await localAgentProviderAccountCredentialForTest({
+    providerPlugins: [
+      {
+        auth: {
+          headers: {
+            authorization: "Bearer imported-stale-token",
+            "anthropic-beta": "oauth-2025-04-20"
+          }
+        },
+        key: "ccr-local-agent-claude-code-api-claude-code-oauth",
+        providerName: "Claude Code API"
+      }
+    ]
+  }, {
+    api_base_url: "https://api.anthropic.com",
+    api_key: localAgentProviderApiKey,
+    id: "claude-code-api",
+    localAgent: { configDir, kind: "claude-code" },
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    type: "anthropic_messages"
+  });
+
+  assert.equal(credential?.apiKey, "second-access-token");
+});
+
+test("Claude Code local account credential drops a plugin snapshot when the provider source changes", async (t) => {
+  const home = useTemporaryHome(t, "ccr-claude-code-account-changed-source-");
+  usePlatform(t, "linux");
+  const staleConfigDir = path.join(home, ".claude-one");
+  const currentConfigDir = path.join(home, ".claude-two");
+  mkdirSync(staleConfigDir, { recursive: true });
+  mkdirSync(currentConfigDir, { recursive: true });
+
+  const credential = await localAgentProviderAccountCredentialForTest({
+    providerPlugins: [
+      {
+        auth: {
+          headers: {
+            authorization: "Bearer imported-stale-token",
+            "anthropic-beta": "oauth-2025-04-20"
+          }
+        },
+        key: "ccr-local-agent-claude-code-api-claude-code-oauth",
+        localAgent: {
+          configDir: staleConfigDir,
+          kind: "claude-code"
+        },
+        providerName: "Claude Code API"
+      }
+    ]
+  }, {
+    api_base_url: "https://api.anthropic.com",
+    api_key: localAgentProviderApiKey,
+    id: "claude-code-api",
+    localAgent: { configDir: currentConfigDir, kind: "claude-code" },
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    type: "anthropic_messages"
+  });
+
+  assert.equal(credential?.apiKey, undefined);
+  assert.equal(
+    credential?.headers?.["anthropic-beta"],
+    "oauth-2025-04-20"
+  );
+});
+
+test("Claude Code local account credential preserves a snapshot for equivalent source paths", async (t) => {
+  const home = useTemporaryHome(t, "ccr-claude-code-account-equivalent-source-");
+  usePlatform(t, "linux");
+  const configDir = path.join(home, ".claude-two");
+  mkdirSync(configDir, { recursive: true });
+
+  const credential = await localAgentProviderAccountCredentialForTest({
+    providerPlugins: [
+      {
+        auth: {
+          headers: {
+            authorization: "Bearer imported-snapshot-token",
+            "anthropic-beta": "oauth-2025-04-20"
+          }
+        },
+        key: "ccr-local-agent-claude-code-api-claude-code-oauth",
+        localAgent: {
+          configDir: `${configDir}${path.sep}.`,
+          kind: "claude-code"
+        },
+        providerName: "Claude Code API"
+      }
+    ]
+  }, {
+    api_base_url: "https://api.anthropic.com",
+    api_key: localAgentProviderApiKey,
+    id: "claude-code-api",
+    localAgent: { configDir, kind: "claude-code" },
+    models: ["claude-sonnet-5"],
+    name: "Claude Code API",
+    type: "anthropic_messages"
+  });
+
+  assert.equal(credential?.apiKey, "imported-snapshot-token");
 });
 
 test("Kimi local account credential carries its API key and CLI identity", async (t) => {

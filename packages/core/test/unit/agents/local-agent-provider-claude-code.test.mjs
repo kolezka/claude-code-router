@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { claudeCodeCandidate, importClaudeCodeProvider } from "@ccr/core/agents/local-providers/claude-code.ts";
+import { claudeCodeCandidate, importClaudeCodeProvider, readClaudeCodeOauth } from "@ccr/core/agents/local-providers/claude-code.ts";
 import { createDefaultAppConfig } from "@ccr/core/config/default-config.ts";
 import { compileCoreGatewayConfig } from "@ccr/core/gateway/core-runtime/config-compiler.ts";
 
@@ -52,6 +52,51 @@ test("Claude Code local provider falls back to file credentials when Keychain is
         const result = importClaudeCodeProvider(candidate, []);
         assert.equal(result.providerPlugins[0].auth.headers.authorization, "Bearer file-access-token");
       });
+    });
+  });
+});
+
+test("Claude Code credential lookup stays inside an explicit configuration directory", async () => {
+  await withClaudeCodeHome(async (home) => {
+    await withPlatform("linux", async () => {
+      writeClaudeCredentials(home, {
+        accessToken: "default-access-token"
+      });
+      const configDir = path.join(home, ".claude-two");
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(path.join(configDir, ".credentials.json"), JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "second-access-token",
+          refreshToken: "second-refresh-token"
+        }
+      }));
+
+      const oauth = readClaudeCodeOauth(configDir);
+
+      assert.equal(oauth?.accessToken, "second-access-token");
+      assert.equal(oauth?.refreshToken, "second-refresh-token");
+      assert.equal(oauth?.sourceFile, path.join(configDir, ".credentials.json"));
+    });
+  });
+});
+
+test("Claude Code credential lookup accepts credentials.json inside an explicit configuration directory", async () => {
+  await withClaudeCodeHome(async (home) => {
+    await withPlatform("linux", async () => {
+      const configDir = path.join(home, ".claude-two");
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(path.join(configDir, "credentials.json"), JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "second-access-token",
+          refreshToken: "second-refresh-token"
+        }
+      }));
+
+      const oauth = readClaudeCodeOauth(configDir);
+
+      assert.equal(oauth?.accessToken, "second-access-token");
+      assert.equal(oauth?.refreshToken, "second-refresh-token");
+      assert.equal(oauth?.sourceFile, path.join(configDir, "credentials.json"));
     });
   });
 });
@@ -282,6 +327,35 @@ test("Claude Code local provider reads the config-dir-suffixed keychain service"
   });
 });
 
+test("Claude Code credential lookup normalizes an explicit configuration directory for its Keychain service", { skip: process.platform === "win32" }, async () => {
+  await withClaudeCodeHome(async (home) => {
+    await withPlatform("darwin", async () => {
+      const configDir = path.join(home, ".claude-two");
+      const suffix = createHash("sha256").update(configDir.normalize("NFC")).digest("hex").slice(0, 8);
+      const service = `Claude Code-credentials-${suffix}`;
+      await withFakeSecurityKeychain([
+        {
+          account: keychainAccount,
+          modified: "20260823020000",
+          record: { claudeAiOauth: { accessToken: "default-access-token" } },
+          service: "Claude Code-credentials"
+        },
+        {
+          account: keychainAccount,
+          modified: "20260823010000",
+          record: { claudeAiOauth: { accessToken: "second-access-token" } },
+          service
+        }
+      ], async () => {
+        const oauth = readClaudeCodeOauth(`${configDir}${path.sep}.`);
+
+        assert.equal(oauth?.accessToken, "second-access-token");
+        assert.equal(oauth?.sourceFile, `keychain:${service} (${keychainAccount})`);
+      });
+    });
+  });
+});
+
 test("Claude Code local provider explains login state that carries no OAuth token", { skip: process.platform === "win32" }, async () => {
   await withClaudeCodeHome(async () => {
     await withPlatform("darwin", async () => {
@@ -321,11 +395,17 @@ test("Claude Code local provider reports a missing candidate when no keychain it
 async function withClaudeCodeHome(run) {
   const home = mkdtempSync(path.join(os.tmpdir(), "ccr-claude-code-provider-"));
   const previousHome = process.env.HOME;
+  const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  const previousSecureStorageConfigDir = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
   process.env.HOME = home;
+  delete process.env.CLAUDE_CONFIG_DIR;
+  delete process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
   try {
     await run(home);
   } finally {
     restoreEnv("HOME", previousHome);
+    restoreEnv("CLAUDE_CONFIG_DIR", previousConfigDir);
+    restoreEnv("CLAUDE_SECURESTORAGE_CONFIG_DIR", previousSecureStorageConfigDir);
     rmSync(home, { force: true, recursive: true });
   }
 }

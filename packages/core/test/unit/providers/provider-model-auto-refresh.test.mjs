@@ -369,6 +369,59 @@ test("auto model refresh uses Codex local model catalog during hot apply", async
   assert.deepEqual(result.providers[0].addedModels, ["gpt-5.1-codex"]);
 });
 
+test("auto model refresh reads the provider CODEX_HOME model catalog", async (t) => {
+  const previousCcrHome = process.env.CCR_INTERNAL_HOME_DIR;
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-codex-provider-catalog-"));
+  const processHome = path.join(root, "process-home");
+  const configDir = path.join(root, "codex-two");
+  mkdirSync(path.join(processHome, ".codex"), { recursive: true });
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(path.join(processHome, ".codex", "models_cache.json"), JSON.stringify({
+    models: [{ slug: "default-codex-model" }]
+  }), "utf8");
+  writeFileSync(path.join(configDir, "models_cache.json"), JSON.stringify({
+    models: [{ display_name: "Second Codex Model", slug: "second-codex-model" }]
+  }), "utf8");
+  process.env.CCR_INTERNAL_HOME_DIR = processHome;
+  t.after(() => {
+    if (previousCcrHome === undefined) {
+      delete process.env.CCR_INTERNAL_HOME_DIR;
+    } else {
+      process.env.CCR_INTERNAL_HOME_DIR = previousCcrHome;
+    }
+    rmSync(root, { force: true, recursive: true });
+  });
+
+  const config = testConfig({
+    Providers: [
+      {
+        api_base_url: codexDefaultBaseUrl,
+        api_key: "ccr-local-agent-login",
+        autoFetchModels: true,
+        autoFetchKnownModels: ["gpt-5-codex"],
+        id: "codex-two",
+        localAgent: { configDir, kind: "codex" },
+        models: ["gpt-5-codex"],
+        name: "Codex Two",
+        type: "openai_responses"
+      }
+    ]
+  });
+
+  const result = await refreshAutoFetchProviderModels(config, {
+    probeProvider: async (request) => ({
+      capabilities: [],
+      models: ["gpt-5-codex"],
+      normalizedBaseUrl: request.baseUrl,
+      protocols: []
+    })
+  });
+
+  assert.deepEqual(result.config.Providers[0].models, ["gpt-5-codex", "second-codex-model"]);
+  assert.equal(result.config.Providers[0].modelDisplayNames["second-codex-model"], "Second Codex Model");
+  assert.equal(result.config.Providers[0].models.includes("default-codex-model"), false);
+});
+
 test("auto model refresh is unchanged when fetched models are already configured", async () => {
   const config = testConfig();
 
@@ -467,9 +520,161 @@ test("auto model refresh uses enabled local provider plugins including protocol-
   assert.deepEqual(pluginKeys, ["ccr-local-agent-provider-internal"]);
 });
 
+test("auto model refresh uses the provider CODEX_HOME instead of a stale plugin source", async () => {
+  const configDir = "/Users/test/.codex-two";
+  const config = testConfig({
+    Providers: [
+      {
+        api_base_url: codexDefaultBaseUrl,
+        api_key: "ccr-local-agent-login",
+        autoFetchModels: true,
+        autoFetchKnownModels: ["gpt-5-codex"],
+        id: "codex-two",
+        localAgent: { configDir, kind: "codex" },
+        models: ["gpt-5-codex"],
+        name: "Codex Two",
+        type: "openai_responses"
+      }
+    ],
+    providerPlugins: [
+      {
+        auth: {
+          headers: {
+            authorization: "Bearer stale-access-token",
+            "ChatGPT-Account-Id": "stale-account-id",
+            "x-preserved-header": "preserved"
+          }
+        },
+        codexOauth: {
+          accessToken: "stale-access-token",
+          accountId: "stale-account-id",
+          required: true
+        },
+        key: "ccr-local-agent-codex-two-codex-oauth",
+        localAgent: { configDir: "/Users/test/.codex-one", kind: "codex" },
+        providerName: "Codex Two"
+      }
+    ]
+  });
+
+  let providerPlugin;
+  await refreshAutoFetchProviderModels(config, {
+    probeProvider: async (request) => {
+      [providerPlugin] = request.providerPlugins;
+      return {
+        capabilities: [],
+        models: ["gpt-5-codex"],
+        normalizedBaseUrl: request.baseUrl,
+        protocols: []
+      };
+    }
+  });
+
+  assert.deepEqual(providerPlugin.localAgent, { configDir, kind: "codex" });
+  assert.equal(providerPlugin.codexOauth.accessToken, undefined);
+  assert.equal(providerPlugin.codexOauth.accountId, undefined);
+  assert.equal(providerPlugin.codexOauth.required, true);
+  assert.equal(providerPlugin.auth.headers.authorization, undefined);
+  assert.equal(providerPlugin.auth.headers["ChatGPT-Account-Id"], undefined);
+  assert.equal(providerPlugin.auth.headers["x-preserved-header"], "preserved");
+});
+
+test("auto model refresh reads the provider CODEX_HOME when the matching plugin is missing", async (t) => {
+  const previousCcrHome = process.env.CCR_INTERNAL_HOME_DIR;
+  const previousFetch = globalThis.fetch;
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-codex-refresh-missing-plugin-"));
+  const processHome = path.join(root, "process-home");
+  const defaultConfigDir = path.join(processHome, ".codex");
+  const configDir = path.join(root, "codex-two");
+  const defaultToken = jwt({
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct-default" },
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    scope: "api.connectors.read api.connectors.invoke"
+  });
+  const selectedToken = jwt({
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct-selected" },
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    scope: "api.connectors.read api.connectors.invoke"
+  });
+  mkdirSync(defaultConfigDir, { recursive: true });
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(path.join(defaultConfigDir, "auth.json"), JSON.stringify({
+    tokens: { access_token: defaultToken, account_id: "acct-default" }
+  }));
+  writeFileSync(path.join(configDir, "auth.json"), JSON.stringify({
+    tokens: { access_token: selectedToken, account_id: "acct-selected" }
+  }));
+  process.env.CCR_INTERNAL_HOME_DIR = processHome;
+
+  const modelRequests = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const headers = new Headers(init?.headers);
+    if (url.pathname.endsWith("/models")) {
+      const authorization = headers.get("authorization");
+      modelRequests.push({
+        authorization,
+        chatgptAccountId: headers.get("chatgpt-account-id")
+      });
+      const model = authorization === `Bearer ${selectedToken}`
+        ? "selected-codex-model"
+        : "default-codex-model";
+      return new Response(JSON.stringify({ data: [{ id: model }] }), {
+        headers: { "content-type": "application/json" },
+        status: 200
+      });
+    }
+    return new Response(JSON.stringify({ error: { message: "Unsupported probe" } }), {
+      headers: { "content-type": "application/json" },
+      status: 404
+    });
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    if (previousCcrHome === undefined) {
+      delete process.env.CCR_INTERNAL_HOME_DIR;
+    } else {
+      process.env.CCR_INTERNAL_HOME_DIR = previousCcrHome;
+    }
+    rmSync(root, { force: true, recursive: true });
+  });
+
+  const result = await refreshAutoFetchProviderModels(testConfig({
+    Providers: [
+      {
+        api_base_url: codexDefaultBaseUrl,
+        api_key: "ccr-local-agent-login",
+        autoFetchModels: true,
+        autoFetchKnownModels: ["gpt-5-codex"],
+        id: "codex-two",
+        localAgent: { configDir, kind: "codex" },
+        models: ["gpt-5-codex"],
+        name: "Codex Two",
+        type: "openai_responses"
+      }
+    ],
+    providerPlugins: []
+  }));
+
+  assert.deepEqual(modelRequests, [{
+    authorization: `Bearer ${selectedToken}`,
+    chatgptAccountId: "acct-selected"
+  }]);
+  assert.equal(result.config.Providers[0].models.includes("selected-codex-model"), true);
+  assert.equal(result.config.Providers[0].models.includes("default-codex-model"), false);
+});
+
 test("auto model refresh enabled check ignores disabled providers", () => {
   assert.equal(hasAutoFetchModelProviders(testConfig()), true);
   assert.equal(hasAutoFetchModelProviders({
     Providers: [{ autoFetchModels: true, enabled: false, models: [], name: "Disabled" }]
   }), false);
 });
+
+function jwt(payload) {
+  return [
+    Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url"),
+    Buffer.from(JSON.stringify(payload)).toString("base64url"),
+    ""
+  ].join(".");
+}

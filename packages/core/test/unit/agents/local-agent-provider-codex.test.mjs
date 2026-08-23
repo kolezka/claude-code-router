@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   attachCodexRateLimitResetCreditDetails,
@@ -6,7 +9,9 @@ import {
   codexModelCatalogFromPayloadForTest,
   codexProviderAccountConfig,
   codexRateLimitResetCreditDetails,
-  normalizeCodexProviderAccountConfig
+  normalizeCodexProviderAccountConfig,
+  readCodexAuth,
+  readCodexLocalModelCatalog
 } from "@ccr/core/agents/local-providers/codex.ts";
 import { localAgentProviderApiKey } from "@ccr/core/agents/local-providers/shared.ts";
 
@@ -361,4 +366,66 @@ test("Codex model catalog parser ignores invalid context metadata", () => {
   });
 
   assert.equal(catalog.modelMetadata?.["invalid-context-model"], undefined);
+});
+
+test("Codex model lookup reads models_cache.json directly from an explicit CODEX_HOME", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-codex-model-homes-"));
+  const processHome = path.join(root, "process-home");
+  const codexHome = path.join(root, "codex-two");
+  mkdirSync(path.join(processHome, ".codex"), { recursive: true });
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(path.join(processHome, ".codex", "models_cache.json"), JSON.stringify({
+    models: [{ slug: "default-codex-model" }]
+  }));
+  writeFileSync(path.join(codexHome, "models_cache.json"), JSON.stringify({
+    models: [{ display_name: "Second Codex Model", slug: "second-codex-model" }]
+  }));
+  const previousHome = process.env.CCR_INTERNAL_HOME_DIR;
+  process.env.CCR_INTERNAL_HOME_DIR = processHome;
+
+  try {
+    const catalog = readCodexLocalModelCatalog(codexHome);
+
+    assert.ok(catalog.models.includes("second-codex-model"));
+    assert.ok(!catalog.models.includes("default-codex-model"));
+    assert.equal(catalog.modelDisplayNames?.["second-codex-model"], "Second Codex Model");
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.CCR_INTERNAL_HOME_DIR;
+    } else {
+      process.env.CCR_INTERNAL_HOME_DIR = previousHome;
+    }
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("Codex credential lookup reads auth.json directly from an explicit CODEX_HOME", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-codex-homes-"));
+  const processHome = path.join(root, "process-home");
+  const codexHome = path.join(root, "codex-two");
+  mkdirSync(path.join(processHome, ".codex"), { recursive: true });
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(path.join(processHome, ".codex", "auth.json"), JSON.stringify({
+    tokens: { access_token: "default-access-token" }
+  }));
+  writeFileSync(path.join(codexHome, "auth.json"), JSON.stringify({
+    tokens: { access_token: "second-access-token", refresh_token: "second-refresh-token" }
+  }));
+  const previousHome = process.env.CCR_INTERNAL_HOME_DIR;
+  process.env.CCR_INTERNAL_HOME_DIR = processHome;
+
+  try {
+    const auth = readCodexAuth(codexHome);
+
+    assert.equal(auth?.accessToken, "second-access-token");
+    assert.equal(auth?.refreshToken, "second-refresh-token");
+    assert.equal(auth?.sourceFile, path.join(codexHome, "auth.json"));
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.CCR_INTERNAL_HOME_DIR;
+    } else {
+      process.env.CCR_INTERNAL_HOME_DIR = previousHome;
+    }
+    rmSync(root, { force: true, recursive: true });
+  }
 });
