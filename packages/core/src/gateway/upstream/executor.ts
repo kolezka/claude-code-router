@@ -769,7 +769,7 @@ function usageAwareOpenAiChatAttemptBody(input: {
   body: Buffer | undefined;
   config: AppConfig;
   path: string;
-  target?: { protocol: GatewayProviderProtocol };
+  target?: { protocol: GatewayProviderProtocol; provider?: GatewayProviderConfig };
 }): Buffer | undefined {
   const clientProtocol = requestProtocolForPath(input.path);
   const parsedBody = parseJsonObjectSafe(input.body);
@@ -782,21 +782,47 @@ function usageAwareOpenAiChatAttemptBody(input: {
   if (providerProtocol !== "openai_chat_completions" && providerProtocol !== "openai_responses") {
     return input.body;
   }
-  const sanitizedBody = stripUnsupportedOpenAiRequestParameters(input.body);
+  const sanitizedBody = stripUnsupportedOpenAiRequestParameters(
+    input.body,
+    isCodexBackendTarget(input.target?.provider)
+  );
   return providerProtocol === "openai_chat_completions"
     ? usageAwareOpenAiChatBody(sanitizedBody)
     : sanitizedBody;
 }
 
 
-function stripUnsupportedOpenAiRequestParameters(body: Buffer | undefined): Buffer | undefined {
+// The ChatGPT Codex backend rejects `metadata` outright (400 "Unsupported parameter:
+// metadata"), while the OpenAI API and other openai_responses providers accept it. Scope
+// the strip to that host, not to the protocol: DeepSeek and litellm also advertise
+// openai_responses and must keep their metadata.
+function isCodexBackendTarget(provider: GatewayProviderConfig | undefined): boolean {
+  if (!provider) {
+    return false;
+  }
+  return normalizedProviderCapabilities(provider).some((capability) =>
+    stringValue(capability.baseUrl)?.toLowerCase().includes("chatgpt.com/backend-api/codex") === true);
+}
+
+
+function stripUnsupportedOpenAiRequestParameters(
+  body: Buffer | undefined,
+  stripMetadata = false
+): Buffer | undefined {
   const parsedBody = parseJsonObjectSafe(body);
-  if (!parsedBody || (!("thinking" in parsedBody) && !("reasoning_split" in parsedBody))) {
+  if (!parsedBody) {
+    return body;
+  }
+  const removesMetadata = stripMetadata && "metadata" in parsedBody;
+  if (!("thinking" in parsedBody) && !("reasoning_split" in parsedBody) && !removesMetadata) {
     return body;
   }
   const next = { ...parsedBody };
   delete next.thinking;
   delete next.reasoning_split;
+  if (stripMetadata) {
+    delete next.metadata;
+  }
   return serializeJsonBody(next);
 }
 
