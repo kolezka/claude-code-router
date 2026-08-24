@@ -31,6 +31,7 @@ import { detectProviderIcon } from "@ccr/core/providers/icons";
 import { fetchProviderManifest } from "@ccr/core/providers/manifest-service";
 import { getLocalAgentProviderCandidates, importLocalAgentProvider, probeLocalAgentProvider } from "@ccr/core/agents/local-providers/service";
 import { getProviderCatalogModels } from "@ccr/core/providers/model-catalog";
+import { getOpenRouterProviderCatalog } from "@ccr/core/providers/openrouter-provider-catalog";
 import { getProviderPresets } from "@ccr/core/providers/presets/index";
 import { checkGatewayProviderConnectivity, probeGatewayProvider, probeGatewayProviderCandidates } from "@ccr/core/providers/probe";
 import { stopProviderModelAutoRefreshService, syncProviderModelAutoRefreshService } from "@ccr/core/providers/model-auto-refresh";
@@ -69,6 +70,7 @@ import type {
   LocalAgentProviderImportRequest,
   LocalAgentProviderProbeRequest,
   LocalAgentProviderScanRequest,
+  OpenRouterProviderCatalogRequest,
   PluginDependency,
   PluginDirectorySelection,
   ProfileApplyResult,
@@ -331,6 +333,7 @@ const rpcHandlers: Record<string, RpcHandler> = {
   getProfileRuntimeStatus: () => getProfileRuntimeStatus(),
   getProviderAccountSnapshots: (provider, options) => getProviderAccountSnapshots(provider as string | undefined, options as ProviderAccountSnapshotRequestOptions | undefined),
   getProviderCatalogModels: (request) => getProviderCatalogModels(request as ProviderCatalogModelsRequest),
+  getOpenRouterProviderCatalog: (request) => getOpenRouterProviderCatalog(request as OpenRouterProviderCatalogRequest),
   getProviderPresets: () => getProviderPresets(),
   getProxyCertificateStatus: () => proxyService.getCertificateStatus(),
   getProxyNetworkCaptures: () => proxyService.getNetworkCaptures(),
@@ -1134,6 +1137,11 @@ function pluginPermissionAlias(value: string): string {
     case "route":
     case "routes":
       return "gateway-routes";
+    case "gateway-request-transform":
+    case "gateway-request-transforms":
+    case "request-transform":
+    case "request-transforms":
+      return "gateway-request-transforms";
     case "proxy":
     case "proxy-route":
       return "proxy-routes";

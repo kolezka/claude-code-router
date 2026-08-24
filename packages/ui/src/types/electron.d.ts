@@ -45,6 +45,8 @@ import type {
   LocalAgentProviderProbeRequest,
   LocalAgentProviderProbeResult,
   LocalAgentProviderScanRequest,
+  OpenRouterProviderCatalogRequest,
+  OpenRouterProviderCatalogResult,
   PluginDirectorySelection,
   PluginMarketplaceEntry,
   ProfileOpenCommandResult,
@@ -114,6 +116,7 @@ declare global {
       getProfileRuntimeStatus: () => Promise<ProfileRuntimeStatus>;
       getProviderAccountSnapshots: (provider?: string, options?: ProviderAccountSnapshotRequestOptions) => Promise<ProviderAccountSnapshot[]>;
       getProviderCatalogModels: (request: ProviderCatalogModelsRequest) => Promise<ProviderCatalogModelsResult>;
+      getOpenRouterProviderCatalog: (request: OpenRouterProviderCatalogRequest) => Promise<OpenRouterProviderCatalogResult>;
       getProviderPresets: () => Promise<ProviderPreset[]>;
       getPluginMarketplace: () => Promise<PluginMarketplaceEntry[]>;
       getProxyCertificateStatus: () => Promise<ProxyCertificateStatus>;
