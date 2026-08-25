@@ -16,6 +16,10 @@ type ExistingGatewayHttpProbe = {
 };
 
 const existingGatewayFetchAttempts = 3;
+// Model discovery filters a profile's allowlist against the whole route table, which costs
+// seconds on profiles that restrict models. Retrying that wait would only multiply it, so
+// this probe gets one long window instead of several short ones.
+const existingGatewayModelsProbeTimeoutMs = 15_000;
 const runtimeConfigReloadTimeoutMs = 20_000;
 
 export async function probeExistingCcrGateway(
@@ -49,7 +53,7 @@ export async function probeExistingCcrGateway(
         authorization: `Bearer ${apiKey.key}`,
         "user-agent": "Claude Code"
       }
-    });
+    }, existingGatewayFetchAttempts, existingGatewayModelsProbeTimeoutMs);
     if (models.status === 200) {
       return { apiKey: apiKey.key, endpoint, state: "usable" };
     }
@@ -162,7 +166,11 @@ async function fetchExistingGateway(
   let reason: string | undefined;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
     try {
       const response = await fetch(new URL(pathname, endpoint).toString(), {
         ...init,
@@ -173,9 +181,12 @@ async function fetchExistingGateway(
         status: response.status
       };
     } catch (error) {
-      reason = formatError(error);
+      reason = timedOut ? `no response within ${timeoutMs} ms` : formatError(error);
     } finally {
       clearTimeout(timeout);
+    }
+    if (timedOut) {
+      break;
     }
   }
   return { reason };
