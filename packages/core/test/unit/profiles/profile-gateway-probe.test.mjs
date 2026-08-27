@@ -182,6 +182,86 @@ test("existing profile gateway retries a transient transport failure", async () 
   }
 });
 
+function respondAfter(milliseconds, signal, build) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(build()), milliseconds);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(new DOMException("This operation was aborted", "AbortError"));
+    });
+  });
+}
+
+test("existing profile gateway waits out a slow /v1/models response", async () => {
+  const previousFetch = globalThis.fetch;
+  let modelAttempts = 0;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/health") {
+      return Response.json({
+        core: "http://127.0.0.1:3467",
+        status: "running",
+        timestamp: "2026-01-01T00:00:00.000Z"
+      });
+    }
+    if (url.pathname === "/v1/models") {
+      modelAttempts += 1;
+      // A profile with a model allowlist makes this endpoint take seconds, far longer
+      // than the sub-second budget the transport-failure retry was sized for.
+      return respondAfter(1_500, init.signal, () => Response.json({ data: [], object: "list" }));
+    }
+    throw new Error(`Unexpected gateway probe: ${url.pathname}`);
+  };
+
+  try {
+    const { config, profile } = claudeProfileConfig();
+    const result = await ensureProfileGateway(config, profile, "Local subscription router", {
+      reuseExisting: true,
+      startIfMissing: false
+    });
+
+    assert.equal(result.APIKEY, "profile-token");
+    assert.equal(modelAttempts, 1);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("profile gateway that never answers /v1/models reports no response, not HTTP 0", async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/health") {
+      return Response.json({
+        core: "http://127.0.0.1:3467",
+        status: "running",
+        timestamp: "2026-01-01T00:00:00.000Z"
+      });
+    }
+    if (url.pathname === "/v1/models") {
+      throw new TypeError("fetch failed", { cause: { code: "ECONNRESET" } });
+    }
+    throw new Error(`Unexpected gateway probe: ${url.pathname}`);
+  };
+
+  try {
+    const { config, profile } = claudeProfileConfig();
+    await assert.rejects(
+      ensureProfileGateway(config, profile, "Local subscription router", {
+        reuseExisting: true,
+        startIfMissing: false
+      }),
+      (error) => {
+        assert.doesNotMatch(error.message, /HTTP 0/);
+        assert.match(error.message, /did not respond/i);
+        return true;
+      }
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test("unavailable profile gateway reports the probe failure reason", async () => {
   const previousFetch = globalThis.fetch;
   const paths = [];

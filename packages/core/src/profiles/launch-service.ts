@@ -441,7 +441,7 @@ type ExistingProfileGatewayProbe =
   | { endpoint: string; message: string; state: "incompatible" }
   | { endpoint: string; status?: number; state: "not-ccr" }
   | { endpoint: string; message?: string; status: number; state: "unauthorized" }
-  | { endpoint: string; status: number; state: "unusable" }
+  | { endpoint: string; reason?: string; status?: number; state: "unusable" }
   | { apiKey?: string; endpoint: string; state: "usable" };
 
 type ExistingGatewayHttpProbe = {
@@ -451,6 +451,11 @@ type ExistingGatewayHttpProbe = {
 };
 
 const existingGatewayFetchAttempts = 3;
+const existingGatewayProbeTimeoutMs = 1_200;
+// Model discovery filters the profile's allowlist against the whole route table, which
+// costs seconds on profiles that restrict models. Retrying that wait would only multiply
+// it, so this probe gets one long window instead of several short ones.
+const existingGatewayModelsProbeTimeoutMs = 15_000;
 
 async function probeExistingProfileGateway(
   config: AppConfig,
@@ -480,7 +485,9 @@ async function probeExistingProfileGateway(
     if (apiKey) {
       headers.authorization = `Bearer ${apiKey}`;
     }
-    const models = await fetchExistingGateway(endpoint, "/v1/models", { headers });
+    const models = await fetchExistingGateway(endpoint, "/v1/models", { headers }, {
+      timeoutMs: existingGatewayModelsProbeTimeoutMs
+    });
     if (models.status === 200) {
       if (requiresClaudeCodeWifGateway(profile)) {
         const rootProbe = root ?? await fetchExistingGateway(endpoint, "/");
@@ -498,7 +505,7 @@ async function probeExistingProfileGateway(
       lastUnauthorized = models;
       continue;
     }
-    return { endpoint, status: models.status ?? 0, state: "unusable" };
+    return { endpoint, reason: models.reason, status: models.status, state: "unusable" };
   }
 
   if (lastUnauthorized?.status === 401 || lastUnauthorized?.status === 403) {
@@ -509,18 +516,25 @@ async function probeExistingProfileGateway(
       state: "unauthorized"
     };
   }
-  return { endpoint, status: 0, state: "unusable" };
+  return { endpoint, state: "unusable" };
 }
 
 async function fetchExistingGateway(
   endpoint: string,
   pathname: string,
-  init: RequestInit = {}
+  init: RequestInit = {},
+  options: { attempts?: number; timeoutMs?: number } = {}
 ): Promise<ExistingGatewayHttpProbe> {
+  const attempts = options.attempts ?? existingGatewayFetchAttempts;
+  const timeoutMs = options.timeoutMs ?? existingGatewayProbeTimeoutMs;
   let reason: string | undefined;
-  for (let attempt = 0; attempt < existingGatewayFetchAttempts; attempt += 1) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1200);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
     try {
       const response = await fetch(new URL(pathname, endpoint).toString(), {
         ...init,
@@ -531,9 +545,12 @@ async function fetchExistingGateway(
         status: response.status
       };
     } catch (error) {
-      reason = formatError(error);
+      reason = timedOut ? `no response within ${timeoutMs} ms` : formatError(error);
     } finally {
       clearTimeout(timeout);
+    }
+    if (timedOut) {
+      break;
     }
   }
   return { reason };
@@ -721,6 +738,10 @@ function existingGatewayConflictMessage(probe: ExistingProfileGatewayProbe, appN
     return `CCR gateway is already running at ${probe.endpoint}, but it does not accept the API key for ${appName}.${details} Restart CCR Desktop or run ccr start to refresh the gateway before opening this profile.`;
   }
   if (probe.state === "unusable") {
+    if (probe.status === undefined) {
+      const details = probe.reason ? ` (${probe.reason})` : "";
+      return `CCR gateway is already running at ${probe.endpoint}, but it did not respond to the model probe for ${appName}${details}. Restart CCR Desktop or run ccr start to refresh the gateway before opening this profile.`;
+    }
     return `CCR gateway is already running at ${probe.endpoint}, but it cannot serve ${appName} right now (HTTP ${probe.status}). Restart CCR Desktop or run ccr start to refresh the gateway before opening this profile.`;
   }
   if (probe.state === "incompatible") {
