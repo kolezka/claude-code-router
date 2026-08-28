@@ -101,6 +101,8 @@ export type AddProviderDraft = {
   catalogModelMetadata?: Record<string, ProviderModelMetadata>;
   credentialMode: "apiKey" | "pool";
   credentials: ProviderCredentialDraft[];
+  extraBodyText: string;
+  extraHeadersText: string;
   icon: string;
   localAgent?: LocalAgentProviderConfig;
   modelDescriptions?: Record<string, string>;
