@@ -163,6 +163,92 @@ test("startGateway reuses an already healthy CCR gateway on the configured port"
   }
 });
 
+test("web RPC rejects opening a plugin app that is not configured", async () => {
+  const { startWebManagementServer } = await import("@ccr/core/web/management-server.ts");
+  const authToken = "test-web-auth-token";
+  const runtime = await startWebManagementServer({
+    authToken,
+    host: "127.0.0.1",
+    port: 0,
+    startGateway: false
+  });
+
+  try {
+    const { payload, status } = await rpcRaw(runtime.url, authToken, "openPluginApp", ["not-installed"]);
+
+    assert.equal(status, 500);
+    assert.equal(payload.ok, false);
+    assert.match(payload.error.message, /Plugin app is not configured or enabled: not-installed/);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("web RPC returns the gateway URL a configured plugin app opens at", async () => {
+  const { saveAppConfig } = await import("@ccr/core/config/config.ts");
+  const { createDefaultAppConfig } = await import("@ccr/core/config/default-config.ts");
+  const { gatewayRuntimeConfigRevision } = await import("@ccr/core/gateway/runtime-config-control.ts");
+  const { gatewayService } = await import("@ccr/core/gateway/service.ts");
+  const { startWebManagementServer } = await import("@ccr/core/web/management-server.ts");
+  await gatewayService.stop();
+  const gatewayPort = await findAvailablePort();
+  const authToken = "test-web-auth-token";
+  const config = createDefaultAppConfig();
+  config.gateway.port = gatewayPort;
+  config.gateway.corePort = await findAvailablePort();
+  config.Providers = [{
+    api_base_url: "http://127.0.0.1:9/v1",
+    api_key: "test-provider-key",
+    id: "test-provider",
+    models: ["test-model"],
+    name: "Test Provider",
+    type: "openai_chat_completions"
+  }];
+  config.plugins = [{
+    apps: [{ id: "panel", name: "Panel", url: "/panel" }],
+    enabled: true,
+    id: "test-plugin"
+  }];
+  const savedConfig = await saveAppConfig(config);
+  const externalGateway = createHealthyCcrGateway(savedConfig.APIKEY, {
+    reloadRequests: [],
+    revision: gatewayRuntimeConfigRevision(savedConfig)
+  });
+  await listen(externalGateway, gatewayPort);
+  const runtime = await startWebManagementServer({
+    authToken,
+    host: "127.0.0.1",
+    port: 0,
+    startGateway: false
+  });
+
+  try {
+    const { payload } = await rpcRaw(runtime.url, authToken, "openPluginApp", ["test-plugin"]);
+
+    assert.equal(payload.ok, true, payload.ok ? "" : payload.error?.message);
+    assert.deepEqual(payload.value, {
+      title: "Panel",
+      url: `http://127.0.0.1:${gatewayPort}/panel`
+    });
+  } finally {
+    await runtime.close();
+    await gatewayService.stop();
+    await closeServer(externalGateway);
+  }
+});
+
+async function rpcRaw(baseUrl, authToken, method, args = []) {
+  const response = await fetch(new URL("/api/ccr/rpc", baseUrl), {
+    body: JSON.stringify({ args, method }),
+    headers: {
+      "content-type": "application/json",
+      "x-ccr-web-auth": authToken
+    },
+    method: "POST"
+  });
+  return { payload: await response.json(), status: response.status };
+}
+
 async function rpc(baseUrl, authToken, method, args = []) {
   const response = await fetch(new URL("/api/ccr/rpc", baseUrl), {
     body: JSON.stringify({ args, method }),

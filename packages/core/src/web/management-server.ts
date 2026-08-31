@@ -38,6 +38,7 @@ import { stopProviderModelAutoRefreshService, syncProviderModelAutoRefreshServic
 import { applyProfileConfig } from "@ccr/core/profiles/service";
 import { getProfileOpenCommand, getProfileRuntimeStatus, openProfileFromCcr, stopProfileFromCcr } from "@ccr/core/profiles/launch-service";
 import { getPluginMarketplace } from "@ccr/core/plugins/marketplace";
+import { configForPluginAppOpen, resolvePluginAppOpenUrl } from "@ccr/core/plugins/plugin-app-url";
 import { ensureProxyCertificateAuthority } from "@ccr/core/proxy/certificates";
 import { proxyService } from "@ccr/core/proxy/service";
 import { listMcpServerTools } from "@ccr/core/mcp/tool-discovery";
@@ -378,6 +379,22 @@ const rpcHandlers: Record<string, RpcHandler> = {
       throw new Error("No browser app is configured.");
     }
     await openSystemExternal(appUrl);
+  },
+  // The browser has no plugin-app window, so resolve the URL here and let the client open a tab.
+  openPluginApp: async (pluginId, appId) => {
+    const normalizedPluginId = readRequiredString(pluginId, "Plugin id is required.");
+    const normalizedAppId = readString(appId);
+    const syncedClaudeAppConfig = await syncClaudeAppGatewayConfig(await loadAppConfig());
+    const config = configForPluginAppOpen(syncedClaudeAppConfig.config, normalizedPluginId);
+    const target = resolvePluginAppOpenUrl(config, {
+      ...(normalizedAppId ? { appId: normalizedAppId } : {}),
+      pluginId: normalizedPluginId
+    });
+    const status = await gatewayService.ensureStarted(config);
+    if (status.state !== "running") {
+      throw new Error(status.lastError || "CCR gateway did not start.");
+    }
+    return target;
   },
   openProfile: async (request) => {
     const syncedClaudeAppConfig = await syncClaudeAppGatewayConfig(await loadAppConfig());

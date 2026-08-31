@@ -1,14 +1,14 @@
 import { app, dialog } from "electron";
 import path from "node:path";
 import { appDeepLinkProtocol, createProviderDeepLinkRequest as createSharedProviderDeepLinkRequest, isAppDeepLinkUrl } from "@ccr/core/contracts/deep-link";
-import { CLAUDE_DESIGN_PLUGIN_ID, CLAUDE_SHIP_PLUGIN_ID, knownGatewayPluginDefaultApps, type AppConfig, type GatewayPluginAppConfig, type ProviderDeepLinkRequest } from "@ccr/core/contracts/app";
+import { CLAUDE_DESIGN_PLUGIN_ID, CLAUDE_SHIP_PLUGIN_ID, type AppConfig, type ProviderDeepLinkRequest } from "@ccr/core/contracts/app";
 import { IPC_CHANNELS } from "@ccr/core/config/constants";
 import { loadAppConfig } from "@ccr/core/config/config";
 import { syncClaudeAppGatewayConfig } from "@ccr/core/agents/claude-app/gateway-service";
 import { gatewayService } from "@ccr/core/gateway/service";
 import { providerIdentitySafetyIssue } from "@ccr/core/providers/presets/index";
 import { loadClaudeDesignWindowCdpOptions } from "./claude-design-window";
-import { builtInPluginAppForOpen, configForPluginAppOpen, pluginAppUrlForOpen } from "./plugin-app-url";
+import { configForPluginAppOpen, pluginAppUrlForOpen, resolveGatewayPluginAppUrl, resolvePluginApp } from "@ccr/core/plugins/plugin-app-url";
 import windowsManager from "./windows";
 
 type PluginDeepLinkRequest = {
@@ -345,73 +345,6 @@ function boundedPluginId(value: string | null | undefined, optional = false): st
     throw new Error(`Invalid plugin id: ${normalized}`);
   }
   return normalized;
-}
-
-function resolvePluginApp(config: Pick<AppConfig, "plugins">, request: PluginDeepLinkRequest): GatewayPluginAppConfig | undefined {
-  const plugin = config.plugins.find((candidate) => candidate.enabled !== false && candidate.id === request.pluginId);
-  if (!plugin) {
-    return resolveKnownBuiltInPluginApp(request);
-  }
-
-  const apps = configuredPluginApps(plugin.id, plugin.apps);
-  if (!apps.length) {
-    return undefined;
-  }
-
-  if (request.appId) {
-    return apps.find((app) => (app.id || app.name) === request.appId);
-  }
-  return apps[0];
-}
-
-function resolveKnownBuiltInPluginApp(request: PluginDeepLinkRequest): GatewayPluginAppConfig | undefined {
-  return builtInPluginAppForOpen(request.pluginId, request.appId);
-}
-
-function configuredPluginApps(pluginId: string, apps: GatewayPluginAppConfig[] | undefined): GatewayPluginAppConfig[] {
-  if (apps?.length) {
-    return apps;
-  }
-  return knownGatewayPluginDefaultApps(pluginId) || [];
-}
-
-function resolveGatewayPluginAppUrl(config: AppConfig, url: string): string {
-  const trimmed = normalizePluginAppUrl(url);
-  if (/^https?:\/\//i.test(trimmed)) {
-    return trimmed;
-  }
-  const urlPath = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
-  const host = normalizeGatewayPluginAppHost(config.gateway?.host || config.HOST || "127.0.0.1");
-  const port = config.gateway?.port || config.PORT || 3456;
-  return `http://${host}:${port}${urlPath}`;
-}
-
-function normalizePluginAppUrl(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error("Plugin app URL is required.");
-  }
-  if (/^https?:\/\//i.test(trimmed)) {
-    return new URL(trimmed).toString();
-  }
-  if (trimmed.startsWith("//")) {
-    throw new Error("Plugin app URL cannot be protocol-relative.");
-  }
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) {
-    throw new Error("Plugin app URL must be an http(s) URL or a CCR gateway path.");
-  }
-  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
-}
-
-function normalizeGatewayPluginAppHost(host: string): string {
-  const trimmed = host.trim();
-  if (!trimmed || trimmed === "0.0.0.0" || trimmed === "::") {
-    return "127.0.0.1";
-  }
-  if (trimmed.includes(":") && !trimmed.startsWith("[")) {
-    return `[${trimmed}]`;
-  }
-  return trimmed;
 }
 
 function createProviderDeepLinkRequest(rawUrl: string): ProviderDeepLinkRequest {
