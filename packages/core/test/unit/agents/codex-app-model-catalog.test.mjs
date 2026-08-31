@@ -480,6 +480,52 @@ function withPlatform(platform, callback) {
   }
 }
 
+test("ChatGPT custom config directories keep CCR runtime files outside the native Codex home", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-codex-custom-config-"));
+  const configDir = path.join(root, "ccr");
+  const customDir = path.join(root, "custom-codex");
+  const customAuthFile = path.join(customDir, "auth.json");
+  const legacyMarker = {
+    OPENAI_API_KEY: "ccr-local-profile",
+    auth_mode: "apikey"
+  };
+  const profile = {
+    agent: "codex",
+    configDir: customDir,
+    enabled: true,
+    id: "codex-custom",
+    model: "",
+    name: "Codex Custom",
+    providerId: "openai-codex",
+    scope: "custom",
+    surface: "app"
+  };
+  try {
+    mkdirSync(customDir, { recursive: true });
+    writeFileSync(customAuthFile, JSON.stringify(legacyMarker));
+
+    const result = writeCodexCompatibleAppModelCatalog(configDir, profile);
+    const expectedUserDataDir = path.join(
+      configDir,
+      "profiles",
+      "codex-custom",
+      "custom",
+      "codex",
+      ".claude-code-router",
+      "codex-app-user-data",
+      "codex-custom"
+    );
+
+    assert.equal(result.userDataDir, expectedUserDataDir);
+    assert.equal(result.file, path.join(expectedUserDataDir, "ccr-codex-model-catalog.json"));
+    assert.equal(existsSync(result.file), true);
+    assert.deepEqual(JSON.parse(readFileSync(customAuthFile, "utf8")), legacyMarker);
+    assert.equal(existsSync(path.join(customDir, ".claude-code-router")), false);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
 test("ChatGPT migration removes only the exact legacy CCR auth marker", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "ccr-chatgpt-auth-migration-"));
   const authFile = path.join(root, "auth.json");

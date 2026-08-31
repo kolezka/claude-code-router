@@ -3631,6 +3631,7 @@ function parseProfiles(value: unknown): ProfileConfig[] | undefined {
       const botGateway = surface !== "cli" && parsedBotGateway ? completeBotGatewayConfig(parsedBotGateway) : undefined;
       const managedCompact = readManagedCompact(item);
       const routing = parseProfileRouting(item.routing ?? item.route, agent);
+      const configDir = readString(item.configDir);
 
       if (agent === "claude-code") {
         const appPath = readProfileAppPath(item, agent);
@@ -3639,6 +3640,7 @@ function parseProfiles(value: unknown): ProfileConfig[] | undefined {
           ...(appPath ? { appPath } : {}),
           ...(botConfigId ? { botConfigId } : {}),
           ...(botGateway ? { botGateway } : {}),
+          ...(configDir ? { configDir } : {}),
           enabled,
           env: claudeCodeProfileEnv(env),
           fableModel: readString(item.fableModel) || readString(item.defaultFableModel) || "",
@@ -3700,6 +3702,7 @@ function parseProfiles(value: unknown): ProfileConfig[] | undefined {
         ...(appPath ? { appPath } : {}),
         ...(botConfigId ? { botConfigId } : {}),
         ...(botGateway ? { botGateway } : {}),
+        ...(configDir ? { configDir } : {}),
         cliMiddleware: true,
         codexCliPath: readString(item.codexCliPath) || readString(item.cliPath) || readString(item.codexPath) || "",
         codexHome: readString(item.codexHome) || readString(item.home) || "",

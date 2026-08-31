@@ -31,7 +31,7 @@ import {
 } from "./fallbacks";
 
 import { isPlainRecord, normalizeProviderModelSelector, stringValue, uniqueStrings } from "./common";
-import { virtualModelProfileModelNames } from "./providers";
+import { normalizeLocalAgentConfigDirForComparison, virtualModelProfileModelNames } from "./providers";
 import { normalizeRouterRules } from "./routing";
 import { endpointFromHostPort } from "./services";
 import { keyValueRowsFromRecord, recordFromKeyValueRows, stringRecordValue, validateProfileEnvRows } from "./virtual-models";
@@ -467,6 +467,7 @@ export function createProfileDraft(agent: ProfileConfig["agent"] = "claude-code"
     availableModels: [],
     ...createBotGatewayDraft(),
     configFile: defaultCodexConfigFile(agent),
+    configDir: "",
     envRows: agent === "claude-code" ? keyValueRowsFromRecord(claudeCodeProfileEnv()) : [],
     fableModel: "",
     haikuModel: "",
@@ -518,6 +519,7 @@ export function createProfileDraftFromProfile(profile: ProfileConfig, botConfigs
       appPath: profile.appPath ?? "",
       botConfigId,
       botEnabled: surface !== "cli" && Boolean(selectedBot || profile.botGateway?.enabled),
+      configDir: profile.configDir ?? "",
       envRows: keyValueRowsFromRecord(claudeCodeProfileEnv(profile.env ?? {})),
       availableModels: profileDraftAvailableModels(profile),
       fableModel: profile.fableModel ?? "",
@@ -562,6 +564,7 @@ export function createProfileDraftFromProfile(profile: ProfileConfig, botConfigs
     availableModels: profileDraftAvailableModels(profile),
     botConfigId,
     botEnabled: surface !== "cli" && Boolean(selectedBot || profile.botGateway?.enabled),
+    configDir: profile.configDir ?? "",
     configFile: profile.configFile ?? defaultCodexConfigFile(profile.agent),
     envRows: keyValueRowsFromRecord(codexCompatibleProfileEnv(profile.env ?? {})),
     managedCompact: Boolean(profile.managedCompact),
@@ -574,11 +577,93 @@ export function createProfileDraftFromProfile(profile: ProfileConfig, botConfigs
   };
 }
 
+function localAgentConfigFileDirectory(file: string): string | undefined {
+  const value = file.trim();
+  const separatorIndex = Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\"));
+  if (separatorIndex < 0) {
+    return undefined;
+  }
+  if (separatorIndex === 0 || (separatorIndex === 2 && /^[a-zA-Z]:[\\/]/.test(value))) {
+    return value.slice(0, separatorIndex + 1);
+  }
+  return value.slice(0, separatorIndex);
+}
+
+function profileTargetConfigDir(profile: ProfileConfig): string | undefined {
+  const scope = normalizeProfileScope(profile.scope);
+  if (scope === "custom") {
+    if (profile.agent !== "claude-code" && profile.agent !== "codex") {
+      return undefined;
+    }
+    return profile.configDir?.trim() || undefined;
+  }
+  if (scope !== "global") {
+    return undefined;
+  }
+  if (profile.agent === "claude-code") {
+    return localAgentConfigFileDirectory(profile.settingsFile?.trim() || "~/.claude/settings.json");
+  }
+  if (profile.agent === "codex") {
+    return profile.codexHome?.trim() || localAgentConfigFileDirectory(profile.configFile?.trim() || defaultCodexConfigFile(profile.agent));
+  }
+  return undefined;
+}
+
+function canonicalProfileConfigDirForComparison(configDir: string): string {
+  const value = configDir.startsWith("~\\") ? `~/${configDir.slice(2)}` : configDir;
+  const windowsPath = /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("\\\\");
+  return windowsPath ? value.toLowerCase() : value;
+}
+
+// Two profiles writing to one directory would fight over the same settings file.
+// Paths are compared normalized, so "a/foo/../b" and "a/b" collide.
+export function profileConfigDirCollision(
+  draft: AddProfileDraft,
+  existingProfiles: ProfileConfig[],
+  editingProfileId?: string
+): ProfileConfig | undefined {
+  if (draft.scope !== "custom" || (draft.agent !== "claude-code" && draft.agent !== "codex")) {
+    return undefined;
+  }
+  const value = draft.configDir.trim();
+  if (!value) {
+    return undefined;
+  }
+  const target = normalizeLocalAgentConfigDirForComparison(canonicalProfileConfigDirForComparison(value));
+  return existingProfiles.find((profile) => {
+    if (!profile.enabled || profile.id === editingProfileId) {
+      return false;
+    }
+    const other = profileTargetConfigDir(profile);
+    return other !== undefined &&
+      normalizeLocalAgentConfigDirForComparison(canonicalProfileConfigDirForComparison(other)) === target;
+  });
+}
+
+export function profileConfigDirFormatError(draft: AddProfileDraft): string | undefined {
+  if (draft.scope !== "custom" || (draft.agent !== "claude-code" && draft.agent !== "codex")) {
+    return undefined;
+  }
+  const value = draft.configDir.trim();
+  if (!value) {
+    return "Configuration directory is required for a custom config path.";
+  }
+  const homeRooted = value === "~" || value.startsWith("~/") || value.startsWith("~\\");
+  const absolute = value.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("\\\\");
+  if (!homeRooted && !absolute) {
+    return "Configuration directory must be an absolute path or start with ~/.";
+  }
+  return undefined;
+}
+
 export function isProfileDraftSubmittable(draft: AddProfileDraft): boolean {
   if (!draft.name.trim()) {
     return false;
   }
   if (!validateProfileEnvRows(draft.envRows)) {
+    return false;
+  }
+  if (profileConfigDirFormatError(draft)) {
     return false;
   }
   const botAllowed = draft.surface !== "cli";
@@ -649,6 +734,7 @@ export function profileConfigFromDraft(
     availableModels: profileConfigAvailableModelsFromDraft(draft),
     ...botGateway,
     configFile: draft.configFile,
+    configDir: draft.configDir,
     enabled: existingProfile?.enabled ?? true,
     env: draft.agent === "claude-code"
       ? recordFromKeyValueRows(draft.envRows)
@@ -960,8 +1046,7 @@ export function normalizeProfileScope(value: unknown): ProfileScope {
 }
 
 export function normalizeProfileFormScope(value: unknown): ProfileScope {
-  const scope = normalizeProfileScope(value);
-  return scope === "custom" ? "ccr" : scope;
+  return normalizeProfileScope(value);
 }
 
 export function normalizeProfileSurface(value: unknown): ProfileSurface {
@@ -1318,6 +1403,7 @@ export function normalizeProfileItem(profile: ProfileConfig, index: number): Pro
       ...(surface !== "cli" && appPath ? { appPath } : {}),
       ...(botConfigId ? { botConfigId } : {}),
       ...(botGateway ? { botGateway } : {}),
+      ...(scope === "custom" && profile.configDir?.trim() ? { configDir: profile.configDir.trim() } : {}),
       ...(availableModels ? { availableModels } : {}),
       enabled: profile.enabled,
       env: claudeCodeProfileEnv(env),
@@ -1368,6 +1454,7 @@ export function normalizeProfileItem(profile: ProfileConfig, index: number): Pro
     ...(surface !== "cli" && agent !== "zcode" && profile.appPath?.trim() ? { appPath: profile.appPath.trim() } : {}),
     ...(botConfigId ? { botConfigId } : {}),
     ...(botGateway ? { botGateway } : {}),
+    ...(agent === "codex" && scope === "custom" && profile.configDir?.trim() ? { configDir: profile.configDir.trim() } : {}),
     ...(availableModels ? { availableModels } : {}),
     cliMiddleware: true,
     codexCliPath: "",
@@ -1482,6 +1569,7 @@ export function normalizeUnknownProfileItem(value: Record<string, unknown>, inde
     codexHome: typeof value.codexHome === "string" ? value.codexHome : undefined,
     configFormat: typeof value.configFormat === "string" ? normalizeCodexConfigFormat(value.configFormat) : undefined,
     configFile: typeof value.configFile === "string" ? value.configFile : undefined,
+    configDir: typeof value.configDir === "string" ? value.configDir : undefined,
     enabled: typeof value.enabled === "boolean" ? value.enabled : true,
     env: isPlainRecord(value.env) ? stringRecordValue(value.env) : {},
     fableModel: typeof value.fableModel === "string"

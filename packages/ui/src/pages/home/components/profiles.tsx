@@ -5,7 +5,7 @@ import {
   cn, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader,
   DialogTitle, Field, GatewayProviderConfig, Info, Input, KeyValueRowsControl, LoaderCircle, motion,
   normalizeProfileScope, normalizeProfileSurface, Pencil, Plus, PopoverContent,
-  profileAgentLabel, profileAgentOptions, ProfileConfig, type ProfileAgentOption, profileModelProviderOptions, profileOpenSurfaces, profileScopeLabel, profileScopeOptions, profileSummaryItems, profileSurfaceLabel, profileSurfaceOptions,
+  profileAgentLabel, profileAgentOptions, profileConfigDirFormatError, ProfileConfig, type ProfileAgentOption, profileModelProviderOptions, profileOpenSurfaces, profileScopeLabel, profileScopeOptions, profileSummaryItems, profileSurfaceLabel, profileSurfaceOptions,
   Play, Power, RefreshCw, Select, SelectControl, Terminal, Toggle, translateOptions, Trash2, useAppErrorText, useAppText, useLayoutEffect, type ProfileOpenSurface, type ProfileRuntimeStatus, type ReactDragEvent, type ReactNode, type VirtualModelProfileConfig,
   copyTextToClipboard, formatRouterRuleCondition, formatRouterRuleTarget, isRoutingRuleDraftSubmittable, normalizeProviderModelSelector, routerRuleTypeLabel, routingRuleFromDraft, type RouterRule, uniqueStrings, validateProfileEnvRows,
   useCallback, useEffect, useMemo, useRef, useState, X
@@ -21,6 +21,23 @@ type ProfileActionBusy = {
   profileId: string;
   surface: ProfileOpenSurface;
 };
+
+function retainedCustomProfileConfigFile(profile: ProfileConfig): string | undefined {
+  if (profile.enabled || normalizeProfileScope(profile.scope) !== "custom") {
+    return undefined;
+  }
+  if (profile.agent !== "claude-code" && profile.agent !== "codex") {
+    return undefined;
+  }
+  const configDir = profile.configDir?.trim();
+  if (!configDir) {
+    return undefined;
+  }
+  const separatorIndex = Math.max(configDir.lastIndexOf("/"), configDir.lastIndexOf("\\"));
+  const separator = separatorIndex >= 0 && configDir[separatorIndex] === "\\" ? "\\" : "/";
+  const filename = profile.agent === "claude-code" ? "settings.json" : "config.toml";
+  return `${configDir.replace(/[\\/]+$/, "")}${separator}${filename}`;
+}
 
 export function ProfileView({
   addProfile,
@@ -103,6 +120,7 @@ export function ProfileView({
               const cliActionTooltip = `${t("Copy")} ${t("CLI command")}`;
               const showProfileLaunchActions = profile.enabled;
               const profileActionDisabled = Boolean(profileActionBusy);
+              const retainedConfigFile = retainedCustomProfileConfigFile(profile);
 
               return (
                 <div
@@ -153,6 +171,14 @@ export function ProfileView({
                         <div className="min-w-0 truncate font-medium text-foreground" title={item.value}>{item.value}</div>
                       </div>
                     ))}
+                    {retainedConfigFile ? (
+                      <div className="mt-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-[11px] leading-4 text-amber-700 dark:text-amber-300" role="status">
+                        <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span className="min-w-0 break-all">
+                          {t("CCR left its entries in {file}. Remove them manually or re-enable this profile.").replace("{file}", () => retainedConfigFile)}
+                        </span>
+                      </div>
+                    ) : null}
                     {runtimeEntry?.botGateway ? (
                       <div className="grid min-w-0 grid-cols-[92px_minmax(0,1fr)] items-baseline gap-2 text-[12px]">
                         <div className="truncate text-muted-foreground">{t("Bot activity")}</div>
@@ -816,12 +842,25 @@ export function AddProfileForm({
               draft.agent === "grok" || draft.agent === "kimi" || draft.agent === "pi"
                 || draft.agent === "claude-design"
                 ? profileScopeOptions.filter((option) => option.value === "ccr")
-                : profileScopeOptions,
+                : draft.agent === "claude-code" || draft.agent === "codex"
+                    ? profileScopeOptions
+                    : profileScopeOptions.filter((option) => option.value !== "custom"),
               t
             )}
             value={draft.scope}
           />
         </Field>
+        {draft.scope === "custom" && (draft.agent === "claude-code" || draft.agent === "codex") ? (
+          <Field label={t("Configuration directory")} requirement="required" requirementLabel={requiredFieldLabel}>
+            <Input
+              aria-label={t("Configuration directory")}
+              onChange={(event) => onChange({ configDir: event.target.value })}
+              placeholder={draft.agent === "codex" ? "~/.codex" : "~/.claude"}
+              value={draft.configDir}
+            />
+            {validation.configDir ? <ProfileFieldHint>{t(validation.configDir)}</ProfileFieldHint> : null}
+          </Field>
+        ) : null}
         <Field label={t("Entry mode")} requirement="required" requirementLabel={requiredFieldLabel}>
           <SelectControl
             onChange={(surface) => {
@@ -1280,10 +1319,14 @@ function profileDraftValidation(
   draft: AddProfileDraft,
   botConfigs: BotGatewaySavedConfig[],
   availableModelCount: number
-): Partial<Record<"allowedModels" | "bot" | "defaultModel" | "env" | "handoff" | "kimiModel" | "models" | "name", string>> {
-  const issues: Partial<Record<"allowedModels" | "bot" | "defaultModel" | "env" | "handoff" | "kimiModel" | "models" | "name", string>> = {};
+): Partial<Record<"allowedModels" | "bot" | "configDir" | "defaultModel" | "env" | "handoff" | "kimiModel" | "models" | "name", string>> {
+  const issues: Partial<Record<"allowedModels" | "bot" | "configDir" | "defaultModel" | "env" | "handoff" | "kimiModel" | "models" | "name", string>> = {};
   if (!draft.name.trim()) {
     issues.name = "Profile name is required.";
+  }
+  const configDirIssue = profileConfigDirFormatError(draft);
+  if (configDirIssue) {
+    issues.configDir = configDirIssue;
   }
   if (draft.agent !== "claude-design" && availableModelCount === 0) {
     issues.models = "Configure at least one enabled provider model before saving an agent profile.";

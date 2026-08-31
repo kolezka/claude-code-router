@@ -23,7 +23,7 @@ import {
   OverviewWidgetConfig, parseProviderAccountDraft, parseProviderExtraJsonDraft, pluginConfigPatchFromSettingsDraft,
   providerCredentialsFromDraft,
   persistLanguagePreference, PluginInstallCandidate, PluginMarketplaceEntry, PluginRoutingConfigTarget, PluginSettingsDraft, presetCapabilitiesFromDraft,
-  probeProviderCandidates, probeProviderDeepLinkPayload, profileAgentLabel, profileAgentOptionsForRuntime, profileDraftWithDetectedAppPath, profileEnvRowsForAgent, ProfileConfig, ProfileOpenSurface, ProfileRuntimeStatus, profileConfigFromDraft, providerAccountApiKeySafetyIssue,
+  probeProviderCandidates, probeProviderDeepLinkPayload, profileAgentLabel, profileAgentOptionsForRuntime, profileConfigDirCollision, profileDraftWithDetectedAppPath, profileEnvRowsForAgent, ProfileConfig, ProfileOpenSurface, ProfileRuntimeStatus, profileConfigFromDraft, providerAccountApiKeySafetyIssue,
   profileOpenCommandFallback, profileOpenSurfaces, ProviderAccountSnapshot, providerApiKeySafetyIssue, ProviderConnectivityCheckReport, ProviderDeepLinkPayload, ProviderDeepLinkRequest, providerIdentitySafetyIssue, providerProbeCandidates,
   providerAutoFetchKnownModelsForSave, providerBaseUrl, providerCapabilitiesForProtocols, providerCapabilitiesForSave, providerConnectivityApiKeyFromDraft, providerConnectivityProviderPlugins, providerGlobalBaseUrlForProbe, providerLocalAgentConfigForSave, providerManualFieldsForSave, providerProbeCandidatesApiKeySafetyIssue, providerProbeHasSupportedProtocol, providerProbeInputKey, providerProtocolOptions, providerSelectableProtocolsFromProbe, ProxyNetworkSnapshot,
   ProxyStatus, readLanguagePreference, RequestLogListFilter, RequestLogPage, ResolvedLanguage,
@@ -72,6 +72,32 @@ export function localCodexProviderDraftProbeKey(draft: AddProviderDraft): string
     draft.protocol,
     draft.localAgent?.kind === "codex" ? draft.localAgent.configDir : undefined
   ]);
+}
+
+export function onboardingProfileReplacementIndex(
+  activeView: ViewId,
+  profiles: ProfileConfig[],
+  agent: ProfileConfig["agent"]
+): number {
+  return activeView === "onboarding"
+    ? profiles.findIndex((profile) => profile.enabled && profile.agent === agent)
+    : -1;
+}
+
+export function profileEnableConfigDirCollision(
+  profiles: ProfileConfig[],
+  index: number
+): ProfileConfig | undefined {
+  const profile = profiles[index];
+  if (!profile) {
+    return undefined;
+  }
+  const prospectiveProfile = normalizeProfileItem({ ...profile, enabled: true }, index);
+  return profileConfigDirCollision(
+    createProfileDraftFromProfile(prospectiveProfile),
+    profiles,
+    prospectiveProfile.id
+  );
 }
 
 function materializeProviderPluginTemplates(
@@ -730,8 +756,15 @@ function App() {
     Boolean(providerDraft.name.trim() && providerDraft.baseUrl.trim()) &&
     providerDialogModels.length > 0;
   const profileRouteTargetReady = hasAvailableGatewayModels(draftConfig);
-  const canSubmitProfile = profileRouteTargetReady && isProfileDraftSubmittable(profileDraft) && isProfileBotSelectionValid(profileDraft, draftConfig.botConfigs);
-  const canSubmitProfileEdit = profileRouteTargetReady && profileEditIndex !== undefined && isProfileDraftSubmittable(profileEditDraft) && isProfileBotSelectionValid(profileEditDraft, draftConfig.botConfigs);
+  const onboardingProfileIndex = onboardingProfileReplacementIndex(
+    activeView,
+    draftConfig.profile.profiles,
+    profileDraft.agent
+  );
+  const canSubmitProfile = profileRouteTargetReady && isProfileDraftSubmittable(profileDraft) && isProfileBotSelectionValid(profileDraft, draftConfig.botConfigs)
+    && !profileConfigDirCollision(profileDraft, draftConfig.profile.profiles, draftConfig.profile.profiles[onboardingProfileIndex]?.id);
+  const canSubmitProfileEdit = profileRouteTargetReady && profileEditIndex !== undefined && isProfileDraftSubmittable(profileEditDraft) && isProfileBotSelectionValid(profileEditDraft, draftConfig.botConfigs)
+    && !profileConfigDirCollision(profileEditDraft, draftConfig.profile.profiles, draftConfig.profile.profiles[profileEditIndex]?.id);
   const canSubmitApiKey = Boolean(apiKeyDraft.name.trim()) && (apiKeyDraft.expirationPreset !== "custom" || Boolean(apiKeyDraft.expiresAt.trim()));
   const canSubmitApiKeyEdit = apiKeyEditDraft.expirationPreset !== "custom" || Boolean(apiKeyEditDraft.expiresAt.trim());
   const canSubmitRoutingRule = isRoutingRuleDraftSubmittable(routingRuleDraft);
@@ -2922,9 +2955,6 @@ function App() {
       return false;
     }
     setProfileSubmitBusy("add");
-    const onboardingProfileIndex = activeView === "onboarding"
-      ? draftConfig.profile.profiles.findIndex((item) => item.enabled && item.agent === profileDraft.agent)
-      : -1;
     const existingProfile = onboardingProfileIndex >= 0 ? draftConfig.profile.profiles[onboardingProfileIndex] : undefined;
     const profile = profileConfigFromDraft(profileDraft, draftConfig.profile.profiles, existingProfile, draftConfig.botConfigs);
     setProfileAgentTab(profile.agent);
@@ -3019,7 +3049,12 @@ function App() {
       if (!current) {
         return next;
       }
-      profiles[index] = normalizeProfileItem({ ...current, ...patch }, index);
+      const updatedProfile = normalizeProfileItem({ ...current, ...patch }, index);
+      if (patch.enabled && profileEnableConfigDirCollision(profiles, index)) {
+        setProfileActionError(t("Another enabled profile already uses this configuration directory."));
+        return next;
+      }
+      profiles[index] = updatedProfile;
       return {
         ...next,
         profile: {
