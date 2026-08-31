@@ -3,6 +3,7 @@ import test from "node:test";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ProfileConfig } from "@ccr/core/contracts/app.ts";
+import { onboardingProfileReplacementIndex, profileEnableConfigDirCollision } from "@ccr/ui/pages/home/App.tsx";
 import { AddProfileForm, DeleteProfileDialog, ProfileView } from "@ccr/ui/pages/home/components/profiles.tsx";
 import { normalizeConfig } from "@ccr/ui/pages/home/shared/config.ts";
 import { AppI18nContext, appCopy } from "@ccr/ui/pages/home/shared/i18n.tsx";
@@ -904,6 +905,48 @@ test("a blank or relative custom config directory is rejected", () => {
   assert.equal(profileConfigDirFormatError({ ...createProfileDraft("claude-code"), configDir: "/abs/path", scope: "custom" }), undefined);
   // Not applicable outside custom scope.
   assert.equal(profileConfigDirFormatError({ ...createProfileDraft("claude-code"), configDir: "  ", scope: "ccr" }), undefined);
+});
+
+test("onboarding can replace its enabled custom profile without a configuration directory collision", () => {
+  const existing: ProfileConfig = {
+    agent: "claude-code",
+    configDir: "~/Development/inkitt/.claude",
+    enabled: true,
+    id: "inkitt-claude",
+    model: "Provider/model",
+    name: "Inkitt Claude",
+    scope: "custom"
+  };
+  const draft = createProfileDraftFromProfile(existing);
+  const replacementIndex = onboardingProfileReplacementIndex("onboarding", [existing], draft.agent);
+
+  assert.equal(replacementIndex, 0);
+  assert.equal(
+    profileConfigDirCollision(draft, [existing], [existing][replacementIndex]?.id),
+    undefined
+  );
+});
+
+test("re-enabling a custom profile rejects a directory claimed while it was disabled", () => {
+  const disabledProfile: ProfileConfig = {
+    agent: "claude-code",
+    configDir: "~/Development/inkitt/.claude",
+    enabled: false,
+    id: "inkitt-claude",
+    model: "Provider/model",
+    name: "Inkitt Claude",
+    scope: "custom"
+  };
+  const enabledProfile: ProfileConfig = {
+    ...disabledProfile,
+    enabled: true,
+    id: "personal-claude",
+    name: "Personal Claude"
+  };
+  assert.equal(
+    profileEnableConfigDirCollision([disabledProfile, enabledProfile], 0)?.id,
+    "personal-claude"
+  );
 });
 
 test("a custom config directory colliding with another enabled profile is detected", () => {

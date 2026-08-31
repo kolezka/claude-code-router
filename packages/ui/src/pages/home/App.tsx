@@ -74,6 +74,32 @@ export function localCodexProviderDraftProbeKey(draft: AddProviderDraft): string
   ]);
 }
 
+export function onboardingProfileReplacementIndex(
+  activeView: ViewId,
+  profiles: ProfileConfig[],
+  agent: ProfileConfig["agent"]
+): number {
+  return activeView === "onboarding"
+    ? profiles.findIndex((profile) => profile.enabled && profile.agent === agent)
+    : -1;
+}
+
+export function profileEnableConfigDirCollision(
+  profiles: ProfileConfig[],
+  index: number
+): ProfileConfig | undefined {
+  const profile = profiles[index];
+  if (!profile) {
+    return undefined;
+  }
+  const prospectiveProfile = normalizeProfileItem({ ...profile, enabled: true }, index);
+  return profileConfigDirCollision(
+    createProfileDraftFromProfile(prospectiveProfile),
+    profiles,
+    prospectiveProfile.id
+  );
+}
+
 function materializeProviderPluginTemplates(
   templates: unknown[],
   providerName: string,
@@ -730,8 +756,13 @@ function App() {
     Boolean(providerDraft.name.trim() && providerDraft.baseUrl.trim()) &&
     providerDialogModels.length > 0;
   const profileRouteTargetReady = hasAvailableGatewayModels(draftConfig);
+  const onboardingProfileIndex = onboardingProfileReplacementIndex(
+    activeView,
+    draftConfig.profile.profiles,
+    profileDraft.agent
+  );
   const canSubmitProfile = profileRouteTargetReady && isProfileDraftSubmittable(profileDraft) && isProfileBotSelectionValid(profileDraft, draftConfig.botConfigs)
-    && !profileConfigDirCollision(profileDraft, draftConfig.profile.profiles);
+    && !profileConfigDirCollision(profileDraft, draftConfig.profile.profiles, draftConfig.profile.profiles[onboardingProfileIndex]?.id);
   const canSubmitProfileEdit = profileRouteTargetReady && profileEditIndex !== undefined && isProfileDraftSubmittable(profileEditDraft) && isProfileBotSelectionValid(profileEditDraft, draftConfig.botConfigs)
     && !profileConfigDirCollision(profileEditDraft, draftConfig.profile.profiles, draftConfig.profile.profiles[profileEditIndex]?.id);
   const canSubmitApiKey = Boolean(apiKeyDraft.name.trim()) && (apiKeyDraft.expirationPreset !== "custom" || Boolean(apiKeyDraft.expiresAt.trim()));
@@ -2924,9 +2955,6 @@ function App() {
       return false;
     }
     setProfileSubmitBusy("add");
-    const onboardingProfileIndex = activeView === "onboarding"
-      ? draftConfig.profile.profiles.findIndex((item) => item.enabled && item.agent === profileDraft.agent)
-      : -1;
     const existingProfile = onboardingProfileIndex >= 0 ? draftConfig.profile.profiles[onboardingProfileIndex] : undefined;
     const profile = profileConfigFromDraft(profileDraft, draftConfig.profile.profiles, existingProfile, draftConfig.botConfigs);
     setProfileAgentTab(profile.agent);
@@ -3021,7 +3049,12 @@ function App() {
       if (!current) {
         return next;
       }
-      profiles[index] = normalizeProfileItem({ ...current, ...patch }, index);
+      const updatedProfile = normalizeProfileItem({ ...current, ...patch }, index);
+      if (patch.enabled && profileEnableConfigDirCollision(profiles, index)) {
+        setProfileActionError(t("Another enabled profile already uses this configuration directory."));
+        return next;
+      }
+      profiles[index] = updatedProfile;
       return {
         ...next,
         profile: {
