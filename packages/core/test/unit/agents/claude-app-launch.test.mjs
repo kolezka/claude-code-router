@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { claudeAppLaunchCommand, findInstalledClaudeAppExecutable, normalizeClaudeAppCandidate } from "@ccr/core/agents/claude-app/launch.ts";
+import { claudeAppLaunchCommand, findInstalledClaudeAppExecutable, normalizeClaudeAppCandidate, resolveClaudeAppProfileUserDataDir } from "@ccr/core/agents/claude-app/launch.ts";
 
 test("claudeAppLaunchCommand opens macOS app bundles through LaunchServices", (t) => {
   const tempDir = mkdtempForTest();
@@ -115,6 +115,37 @@ test("Claude App profile appPath overrides process env discovery", (t) => {
     assert.equal(result.executable, profileApp);
     assert.equal(result.checked[0], profileApp);
   });
+});
+
+test("Claude App custom config directories keep runtime writes under the CCR profile directory", (t) => {
+  const root = mkdtempForTest();
+  const configDir = path.join(root, "ccr");
+  const customDir = path.join(root, "custom-claude");
+  const profile = {
+    agent: "claude-code",
+    configDir: customDir,
+    id: "claude-custom",
+    name: "Claude Custom",
+    scope: "custom"
+  };
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+
+  const userDataDir = resolveClaudeAppProfileUserDataDir(configDir, profile);
+  const expectedUserDataDir = path.join(
+    configDir,
+    "profiles",
+    "claude-custom",
+    "custom",
+    "claude",
+    ".claude-code-router",
+    "claude-app-user-data",
+    "claude-custom"
+  );
+
+  assert.equal(userDataDir, expectedUserDataDir);
+  mkdirSync(userDataDir, { recursive: true });
+  writeFileSync(path.join(userDataDir, "runtime-state"), "state");
+  assert.equal(existsSync(path.join(customDir, ".claude-code-router")), false);
 });
 
 function mkdtempForTest() {

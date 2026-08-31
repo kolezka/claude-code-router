@@ -254,6 +254,19 @@ export function profileLaunchSpawnCommand(plan: Pick<ProfileLaunchPlan, "args" |
   };
 }
 
+// A custom-scope claude-code or codex profile may name its own agent config
+// directory. That directory IS the config dir, so nothing is appended to it.
+export function resolveProfileConfigDir(profile: ProfileConfig): string | undefined {
+  if (profile.agent !== "claude-code" && profile.agent !== "codex") {
+    return undefined;
+  }
+  if (profile.scope !== "custom") {
+    return undefined;
+  }
+  const configDir = profile.configDir?.trim();
+  return configDir ? resolveUserPath(configDir) : undefined;
+}
+
 export function ccrManagedProfileDir(configDir: string, profile: ProfileConfig): string {
   const slug = sanitizePathSegment(profile.id || profile.name || profile.agent);
   const baseDir = path.join(configDir, "profiles", slug || "profile");
@@ -261,6 +274,10 @@ export function ccrManagedProfileDir(configDir: string, profile: ProfileConfig):
 }
 
 export function resolveClaudeCodeSettingsFile(configDir: string, profile: ProfileConfig): string {
+  const customDir = resolveProfileConfigDir(profile);
+  if (customDir) {
+    return path.join(customDir, "settings.json");
+  }
   if (isGeneratedProfileScope(profile.scope)) {
     return path.join(ccrManagedProfileDir(configDir, profile), "claude", "settings.json");
   }
@@ -270,6 +287,10 @@ export function resolveClaudeCodeSettingsFile(configDir: string, profile: Profil
 export function resolveCodexConfigFile(configDir: string, profile: ProfileConfig): string {
   if (profile.agent === "zcode") {
     return resolveZcodeConfigFile(profile);
+  }
+  const customDir = resolveProfileConfigDir(profile);
+  if (customDir) {
+    return path.join(customDir, "config.toml");
   }
   if (isGeneratedProfileScope(profile.scope)) {
     return path.join(ccrManagedProfileDir(configDir, profile), codexConfigSubdir(profile.agent), "config.toml");

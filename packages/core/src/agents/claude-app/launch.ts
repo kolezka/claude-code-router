@@ -7,7 +7,7 @@ import { botGatewayProfileEnv } from "@ccr/core/agents/bot-gateway/env";
 import { prepareClaudeAppCdpUserDataDir, reserveClaudeAppCdpPort, scheduleClaudeAppDesignCdp } from "@ccr/core/agents/claude-app/cdp";
 import { prepareClaudeAppVmStorage } from "@ccr/core/agents/claude-app/vm-storage";
 import { claudeCodeModelEnv as claudeCodeProfileModelEnv, claudeCodeUtcTimezoneEnvOverride, isClaudeCodeManagedModelEnvKey } from "@ccr/core/agents/claude-code/environment";
-import { resolveClaudeCodeSettingsFile } from "@ccr/core/profiles/launch-core";
+import { ccrManagedProfileDir, resolveClaudeCodeSettingsFile, resolveProfileConfigDir } from "@ccr/core/profiles/launch-core";
 import { normalizeWindowsDesktopAppCandidate, windowsDesktopAppCandidates } from "@ccr/core/platform/windows-app-discovery";
 
 type ClaudeAppLookupResult = {
@@ -104,8 +104,14 @@ export async function launchClaudeAppProfile(configDir: string, profile: Profile
 }
 
 export function resolveClaudeAppProfileUserDataDir(configDir: string, profile: ProfileConfig): string {
-  const settingsFile = resolveClaudeCodeSettingsFile(configDir, profile);
-  return claudeElectronUserDataDir(path.dirname(settingsFile), profile);
+  return claudeElectronUserDataDir(claudeAppStorageDir(configDir, profile), profile);
+}
+
+function claudeAppStorageDir(configDir: string, profile: ProfileConfig): string {
+  if (resolveProfileConfigDir(profile)) {
+    return path.join(ccrManagedProfileDir(configDir, profile), "claude");
+  }
+  return path.dirname(resolveClaudeCodeSettingsFile(configDir, profile));
 }
 
 function shouldOpenClaudeAppDesign(config: AppConfig | undefined): boolean {

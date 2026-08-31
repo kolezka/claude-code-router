@@ -12,6 +12,7 @@ import {
   resolveCodexConfigFile,
   resolveKiloConfigFile,
   resolveOpenCodeConfigFile,
+  resolveProfileConfigDir,
   resolveProfileOpenSurface,
   shouldAutoStartProfileGateway
 } from "@ccr/core/profiles/launch-core.ts";
@@ -286,4 +287,45 @@ test("profileOpenCommand quotes profile references for shell usage", () => {
   assert.equal(cliCommand.endsWith(" cli"), false);
   assert.match(appCommand, / app$/);
   assert.match(workbuddyCommand, / app$/);
+});
+
+test("custom scope with configDir resolves to the named directory itself", () => {
+  const configDir = path.join(path.sep, "tmp", "ccr-config");
+  const home = process.env.HOME;
+  const claudeCustom = { ...claudeProfile, configDir: "~/dotfiles/.claude", scope: "custom" };
+  const codexCustom = { ...codexProfile, configDir: "~/dotfiles/.codex", scope: "custom" };
+
+  assert.equal(resolveProfileConfigDir(claudeCustom), path.join(home, "dotfiles", ".claude"));
+  assert.equal(
+    resolveClaudeCodeSettingsFile(configDir, claudeCustom),
+    path.join(home, "dotfiles", ".claude", "settings.json")
+  );
+  assert.equal(
+    resolveCodexConfigFile(configDir, codexCustom),
+    path.join(home, "dotfiles", ".codex", "config.toml")
+  );
+});
+
+test("configDir is ignored unless scope is custom and the agent is claude-code or codex", () => {
+  const configDir = path.join(path.sep, "tmp", "ccr-config");
+
+  // ccr scope ignores configDir
+  assert.equal(resolveProfileConfigDir({ ...claudeProfile, configDir: "~/dotfiles/.claude" }), undefined);
+  assert.equal(
+    resolveClaudeCodeSettingsFile(configDir, { ...claudeProfile, configDir: "~/dotfiles/.claude" }),
+    path.join(configDir, "profiles", "claude-main", "claude", "settings.json")
+  );
+
+  // custom scope with a blank configDir keeps today's nested path
+  assert.equal(resolveProfileConfigDir({ ...claudeProfile, configDir: "   ", scope: "custom" }), undefined);
+  assert.equal(
+    resolveClaudeCodeSettingsFile(configDir, { ...claudeProfile, configDir: "   ", scope: "custom" }),
+    path.join(configDir, "profiles", "claude-main", "custom", "claude", "settings.json")
+  );
+
+  // an unsupported agent ignores configDir even on custom scope
+  assert.equal(
+    resolveProfileConfigDir({ ...codexProfile, agent: "workbuddy", configDir: "~/dotfiles/.wb", scope: "custom" }),
+    undefined
+  );
 });
