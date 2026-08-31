@@ -1938,7 +1938,6 @@ test("profile service reports a failed model discovery cache invalidation withou
 
 test("profile config parsing keeps configDir for claude-code and codex profiles", async () => {
   const config = createDefaultAppConfig();
-  config.profile.profiles = [];
   await replacePersistedAppConfig({
     ...config,
     profile: {
@@ -1955,7 +1954,7 @@ test("profile config parsing keeps configDir for claude-code and codex profiles"
         },
         {
           agent: "codex",
-          configDir: "~/Development/inkitt/.codex",
+          configDir: "  ~/Development/inkitt/.codex  ",
           enabled: false,
           id: "inkitt-codex",
           model: "Provider/model",
@@ -1970,6 +1969,14 @@ test("profile config parsing keeps configDir for claude-code and codex profiles"
           model: "Provider/model",
           name: "Blank",
           scope: "custom"
+        },
+        {
+          agent: "codex",
+          enabled: false,
+          id: "no-dir",
+          model: "Provider/model",
+          name: "No directory",
+          scope: "custom"
         }
       ]
     }
@@ -1980,7 +1987,8 @@ test("profile config parsing keeps configDir for claude-code and codex profiles"
   assert.equal(byId["inkitt-claude"].configDir, "~/Development/inkitt/.claude");
   assert.equal(byId["inkitt-claude"].scope, "custom");
   assert.equal(byId["inkitt-codex"].configDir, "~/Development/inkitt/.codex");
-  assert.equal(byId["blank-dir"].configDir, undefined);
+  assert.equal(Object.hasOwn(byId["blank-dir"], "configDir"), false);
+  assert.equal(Object.hasOwn(byId["no-dir"], "configDir"), false);
 });
 
 test("custom config directory receives the merged settings file", { skip: !process.env.CCR_INTERNAL_HOME_DIR }, async () => {
@@ -2040,6 +2048,70 @@ test("custom config directory receives the merged settings file", { skip: !proce
     assert.equal(existsSync(path.join(CONFIGDIR, "profiles", "inkitt-claude", "custom")), false);
   } finally {
     rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("custom Codex config directory writes config.toml and preserves user TOML content", { skip: !process.env.CCR_INTERNAL_HOME_DIR }, async () => {
+  const profileId = "custom-codex-direct-config-file";
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-custom-codex-direct-config-"));
+  const configDir = path.join(root, "config");
+  const configFile = path.join(configDir, "config.toml");
+  try {
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(configFile, [
+      'model_reasoning_effort = "max"',
+      "",
+      "[features]",
+      "js_repl = true",
+      ""
+    ].join("\n"));
+
+    const profile = {
+      agent: "codex",
+      cliMiddleware: false,
+      codexCliPath: "",
+      codexHome: "",
+      configDir,
+      configFile: "",
+      enabled: true,
+      env: {},
+      id: profileId,
+      model: "Provider/model",
+      name: "Custom Codex",
+      providerId: "claude-code-router",
+      providerName: "Claude Code Router",
+      scope: "custom",
+      showAllSessions: false,
+      surface: "auto"
+    };
+    const config = createDefaultAppConfig();
+    config.APIKEY = "ccr-custom-codex-direct-config-test";
+    config.APIKEYS = [{
+      createdAt: "2026-01-01T00:00:00.000Z",
+      id: `profile:${profile.id}`,
+      key: "ccr-custom-codex-direct-config-test",
+      name: "Profile: Custom Codex"
+    }];
+    config.Providers = [{
+      api_base_url: "https://example.test/v1",
+      api_key: "provider-key",
+      models: ["model"],
+      name: "Provider"
+    }];
+    config.profile.profiles = [profile];
+
+    const result = await applyProfileConfig(config);
+    const codexStatus = result.clients.find((client) => client.client === "codex");
+    assert.equal(codexStatus?.ok, true);
+    assert.equal(codexStatus?.path, configFile);
+
+    const current = readFileSync(configFile, "utf8");
+    assert.match(current, /model = "Provider\/model"/);
+    assert.match(current, /model_reasoning_effort = "max"/);
+    assert.match(current, /\[features\]\njs_repl = true/);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+    rmSync(path.join(CONFIGDIR, "profiles", profileId), { force: true, recursive: true });
   }
 });
 
