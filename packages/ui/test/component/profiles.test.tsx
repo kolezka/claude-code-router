@@ -4,6 +4,7 @@ import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ProfileConfig } from "@ccr/core/contracts/app.ts";
 import { AddProfileForm, DeleteProfileDialog, ProfileView } from "@ccr/ui/pages/home/components/profiles.tsx";
+import { normalizeConfig } from "@ccr/ui/pages/home/shared/config.ts";
 import { AppI18nContext, appCopy } from "@ccr/ui/pages/home/shared/i18n.tsx";
 import { createProfileDraft, createProfileDraftFromProfile, isProfileDraftSubmittable, normalizeUnknownProfileItem, profileAgentLogoUrl, profileConfigFromDraft, profileDraftWithDetectedAppPath, profileSummaryItems } from "@ccr/ui/pages/home/shared/profiles.ts";
 import { profileScopeOptions } from "../../src/pages/home/shared/options.ts";
@@ -785,8 +786,8 @@ test("Workbuddy profiles support local App configuration", () => {
   assert.notEqual(profileAgentLogoUrl("workbuddy"), profileAgentLogoUrl("codex"));
 });
 
-test("custom scope survives an edit round-trip and carries configDir", () => {
-  const profile = {
+test("custom scope survives normalization and an edit round-trip with configDir", () => {
+  const serializedProfile = {
     agent: "claude-code" as const,
     configDir: "~/Development/inkitt/.claude",
     enabled: true,
@@ -795,12 +796,21 @@ test("custom scope survives an edit round-trip and carries configDir", () => {
     name: "Inkitt Claude",
     scope: "custom" as const
   };
+  const normalizedConfig = normalizeConfig({
+    ...appConfigFixture(),
+    profile: {
+      ...appConfigFixture().profile,
+      profiles: [serializedProfile]
+    }
+  });
+  const profile = normalizedConfig.profile.profiles[0];
+  assert.ok(profile);
 
   const draft = createProfileDraftFromProfile(profile);
   assert.equal(draft.scope, "custom");
   assert.equal(draft.configDir, "~/Development/inkitt/.claude");
 
-  const roundTripped = profileConfigFromDraft(draft, [profile], profile);
+  const roundTripped = profileConfigFromDraft(draft, normalizedConfig.profile.profiles, profile);
   assert.equal(roundTripped.scope, "custom");
   assert.equal(roundTripped.configDir, "~/Development/inkitt/.claude");
 });
@@ -815,9 +825,27 @@ test("the custom scope option is offered", () => {
   assert.equal(profileScopeOptions.some((option) => option.value === "custom"), true);
 });
 
-test("empty configDir preserves existing profile serialization", () => {
-  const config = profileConfigFromDraft(createProfileDraft("claude-code"), []);
+test("blank custom configDir preserves existing profile serialization", () => {
+  const expected = "{\"agent\":\"claude-code\",\"enabled\":true,\"env\":{\"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY\":\"1\"},\"fableModel\":\"\",\"haikuModel\":\"\",\"id\":\"claude-code\",\"managedCompact\":false,\"model\":\"\",\"name\":\"Claude Code\",\"opusModel\":\"\",\"scope\":\"custom\",\"settingsFile\":\"~/.claude/settings.json\",\"sonnetModel\":\"\",\"smallFastModel\":\"\",\"surface\":\"cli\"}";
+
+  for (const configDir of ["", "   "]) {
+    const config = profileConfigFromDraft({ ...createProfileDraft("claude-code"), configDir, scope: "custom" }, []);
+    assert.equal(Object.hasOwn(config, "configDir"), false);
+    assert.equal(JSON.stringify(config), expected);
+  }
+
+  const loadedProfile: ProfileConfig = {
+    agent: "claude-code",
+    enabled: true,
+    id: "claude-code",
+    model: "",
+    name: "Claude Code",
+    scope: "custom",
+    surface: "cli"
+  };
+  const config = profileConfigFromDraft(createProfileDraftFromProfile(loadedProfile), [loadedProfile], loadedProfile);
   assert.equal(Object.hasOwn(config, "configDir"), false);
+  assert.equal(JSON.stringify(config), expected);
 });
 
 test("configDir is dropped for unsupported custom-scope agents", () => {

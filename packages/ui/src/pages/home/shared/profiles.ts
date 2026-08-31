@@ -1487,6 +1487,7 @@ export function normalizeUnknownProfileItem(value: Record<string, unknown>, inde
     codexHome: typeof value.codexHome === "string" ? value.codexHome : undefined,
     configFormat: typeof value.configFormat === "string" ? normalizeCodexConfigFormat(value.configFormat) : undefined,
     configFile: typeof value.configFile === "string" ? value.configFile : undefined,
+    configDir: typeof value.configDir === "string" ? value.configDir : undefined,
     enabled: typeof value.enabled === "boolean" ? value.enabled : true,
     env: isPlainRecord(value.env) ? stringRecordValue(value.env) : {},
     fableModel: typeof value.fableModel === "string"
