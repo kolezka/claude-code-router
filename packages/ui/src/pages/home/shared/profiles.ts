@@ -577,6 +577,38 @@ export function createProfileDraftFromProfile(profile: ProfileConfig, botConfigs
   };
 }
 
+function localAgentConfigFileDirectory(file: string): string | undefined {
+  const value = file.trim();
+  const separatorIndex = Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\"));
+  if (separatorIndex < 0) {
+    return undefined;
+  }
+  if (separatorIndex === 0 || (separatorIndex === 2 && /^[a-zA-Z]:[\\/]/.test(value))) {
+    return value.slice(0, separatorIndex + 1);
+  }
+  return value.slice(0, separatorIndex);
+}
+
+function profileTargetConfigDir(profile: ProfileConfig): string | undefined {
+  const scope = normalizeProfileScope(profile.scope);
+  if (scope === "custom") {
+    if (profile.agent !== "claude-code" && profile.agent !== "codex") {
+      return undefined;
+    }
+    return profile.configDir?.trim() || undefined;
+  }
+  if (scope !== "global") {
+    return undefined;
+  }
+  if (profile.agent === "claude-code") {
+    return localAgentConfigFileDirectory(profile.settingsFile?.trim() || "~/.claude/settings.json");
+  }
+  if (profile.agent === "codex") {
+    return profile.codexHome?.trim() || localAgentConfigFileDirectory(profile.configFile?.trim() || defaultCodexConfigFile(profile.agent));
+  }
+  return undefined;
+}
+
 // Two profiles writing to one directory would fight over the same settings file.
 // Paths are compared normalized, so "a/foo/../b" and "a/b" collide.
 export function profileConfigDirCollision(
@@ -593,10 +625,10 @@ export function profileConfigDirCollision(
   }
   const target = normalizeLocalAgentConfigDirForComparison(value);
   return existingProfiles.find((profile) => {
-    if (!profile.enabled || profile.id === editingProfileId || profile.scope !== "custom") {
+    if (!profile.enabled || profile.id === editingProfileId) {
       return false;
     }
-    const other = profile.configDir?.trim();
+    const other = profileTargetConfigDir(profile);
     return other !== undefined && normalizeLocalAgentConfigDirForComparison(other) === target;
   });
 }

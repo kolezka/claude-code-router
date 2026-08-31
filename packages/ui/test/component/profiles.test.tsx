@@ -995,3 +995,86 @@ test("a custom config directory colliding with another enabled profile is detect
     undefined
   );
 });
+
+test("a custom config directory colliding with an enabled global Claude settings directory is detected", () => {
+  const globalProfile: ProfileConfig = {
+    agent: "claude-code",
+    enabled: true,
+    id: "global-claude",
+    model: "Provider/model",
+    name: "Global Claude",
+    scope: "global",
+    settingsFile: "~/Development/inkitt/.claude/settings.json"
+  };
+
+  const collision = profileConfigDirCollision(
+    { ...createProfileDraft("claude-code"), configDir: "~/Development/inkitt/.claude", scope: "custom" },
+    [globalProfile]
+  );
+
+  assert.equal(collision?.id, "global-claude");
+});
+
+test("a custom config directory colliding with an enabled global Codex target is detected", () => {
+  const draft = { ...createProfileDraft("codex"), configDir: "~/Development/inkitt/.codex", scope: "custom" as const };
+  const baseProfile: ProfileConfig = {
+    agent: "codex",
+    enabled: true,
+    id: "global-codex",
+    model: "Provider/model",
+    name: "Global Codex",
+    scope: "global"
+  };
+
+  const homeCollision = profileConfigDirCollision(draft, [{
+    ...baseProfile,
+    codexHome: "~/Development/inkitt/.codex",
+    configFile: "~/ignored/config.toml"
+  }]);
+  assert.equal(homeCollision?.id, "global-codex");
+
+  const configFileCollision = profileConfigDirCollision(draft, [{
+    ...baseProfile,
+    codexHome: "",
+    configFile: "~/Development/inkitt/.codex/config.toml"
+  }]);
+  assert.equal(configFileCollision?.id, "global-codex");
+
+  const uncCollision = profileConfigDirCollision(
+    { ...draft, configDir: "\\\\server\\share\\.codex" },
+    [{ ...baseProfile, codexHome: "", configFile: "\\\\server\\share\\.codex\\config.toml" }]
+  );
+  assert.equal(uncCollision?.id, "global-codex");
+});
+
+test("a custom config directory does not collide with different global profile targets", () => {
+  const globalProfiles: ProfileConfig[] = [
+    {
+      agent: "claude-code",
+      enabled: true,
+      id: "global-claude",
+      model: "Provider/model",
+      name: "Global Claude",
+      scope: "global",
+      settingsFile: "~/Development/other/.claude/settings.json"
+    },
+    {
+      agent: "codex",
+      codexHome: "~/Development/other/.codex",
+      configFile: "~/ignored/config.toml",
+      enabled: true,
+      id: "global-codex",
+      model: "Provider/model",
+      name: "Global Codex",
+      scope: "global"
+    }
+  ];
+
+  assert.equal(
+    profileConfigDirCollision(
+      { ...createProfileDraft("claude-code"), configDir: "~/Development/inkitt/.claude", scope: "custom" },
+      globalProfiles
+    ),
+    undefined
+  );
+});
