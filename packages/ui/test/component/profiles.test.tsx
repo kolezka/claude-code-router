@@ -1068,6 +1068,83 @@ test("a custom config directory colliding with another enabled profile is detect
   );
 });
 
+test("a tilde-backslash custom config directory collides with an enabled default global Claude target", () => {
+  const globalProfile: ProfileConfig = {
+    agent: "claude-code",
+    enabled: true,
+    id: "global-claude",
+    model: "Provider/model",
+    name: "Global Claude",
+    scope: "global"
+  };
+
+  const collision = profileConfigDirCollision(
+    { ...createProfileDraft("claude-code"), configDir: "~\\.claude", scope: "custom" },
+    [globalProfile]
+  );
+
+  assert.equal(collision?.id, "global-claude");
+});
+
+test("custom configuration directories collide across Windows path case", () => {
+  const existing: ProfileConfig = {
+    agent: "claude-code",
+    configDir: "c:\\users\\me\\.claude",
+    enabled: true,
+    id: "windows-claude",
+    model: "Provider/model",
+    name: "Windows Claude",
+    scope: "custom"
+  };
+
+  const collision = profileConfigDirCollision(
+    { ...createProfileDraft("claude-code"), configDir: "C:\\Users\\Me\\.claude", scope: "custom" },
+    [existing]
+  );
+
+  assert.equal(collision?.id, "windows-claude");
+});
+
+test("custom configuration directories retain POSIX path case sensitivity", () => {
+  const existing: ProfileConfig = {
+    agent: "claude-code",
+    configDir: "/work/Foo",
+    enabled: true,
+    id: "posix-claude",
+    model: "Provider/model",
+    name: "POSIX Claude",
+    scope: "custom"
+  };
+
+  assert.equal(
+    profileConfigDirCollision(
+      { ...createProfileDraft("claude-code"), configDir: "/work/foo", scope: "custom" },
+      [existing]
+    ),
+    undefined
+  );
+});
+
+test("custom configuration directories do not collide when they are genuinely different", () => {
+  const existing: ProfileConfig = {
+    agent: "claude-code",
+    configDir: "/work/one/.claude",
+    enabled: true,
+    id: "first-claude",
+    model: "Provider/model",
+    name: "First Claude",
+    scope: "custom"
+  };
+
+  assert.equal(
+    profileConfigDirCollision(
+      { ...createProfileDraft("claude-code"), configDir: "/work/two/.claude", scope: "custom" },
+      [existing]
+    ),
+    undefined
+  );
+});
+
 test("a custom config directory colliding with an enabled global Claude settings directory is detected", () => {
   const globalProfile: ProfileConfig = {
     agent: "claude-code",

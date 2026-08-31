@@ -609,6 +609,12 @@ function profileTargetConfigDir(profile: ProfileConfig): string | undefined {
   return undefined;
 }
 
+function canonicalProfileConfigDirForComparison(configDir: string): string {
+  const value = configDir.startsWith("~\\") ? `~/${configDir.slice(2)}` : configDir;
+  const windowsPath = /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("\\\\");
+  return windowsPath ? value.toLowerCase() : value;
+}
+
 // Two profiles writing to one directory would fight over the same settings file.
 // Paths are compared normalized, so "a/foo/../b" and "a/b" collide.
 export function profileConfigDirCollision(
@@ -623,13 +629,14 @@ export function profileConfigDirCollision(
   if (!value) {
     return undefined;
   }
-  const target = normalizeLocalAgentConfigDirForComparison(value);
+  const target = normalizeLocalAgentConfigDirForComparison(canonicalProfileConfigDirForComparison(value));
   return existingProfiles.find((profile) => {
     if (!profile.enabled || profile.id === editingProfileId) {
       return false;
     }
     const other = profileTargetConfigDir(profile);
-    return other !== undefined && normalizeLocalAgentConfigDirForComparison(other) === target;
+    return other !== undefined &&
+      normalizeLocalAgentConfigDirForComparison(canonicalProfileConfigDirForComparison(other)) === target;
   });
 }
 
