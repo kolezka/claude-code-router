@@ -1520,6 +1520,7 @@ export type ProfileConfig = {
   cliMiddleware?: boolean;
   codexCliPath?: string;
   codexHome?: string;
+  configDir?: string;
   configFormat?: CodexProfileConfigFormat;
   enabled: boolean;
   env?: Record<string, string>;

@@ -1934,3 +1934,50 @@ test("profile service reports a failed model discovery cache invalidation withou
     rmSync(fingerprintFile, { force: true, recursive: true });
   }
 });
+
+test("profile config parsing keeps configDir for claude-code and codex profiles", async () => {
+  const config = createDefaultAppConfig();
+  config.profile.profiles = [];
+  await replacePersistedAppConfig({
+    ...config,
+    profile: {
+      ...config.profile,
+      profiles: [
+        {
+          agent: "claude-code",
+          configDir: "  ~/Development/inkitt/.claude  ",
+          enabled: true,
+          id: "inkitt-claude",
+          model: "Provider/model",
+          name: "Inkitt Claude",
+          scope: "custom"
+        },
+        {
+          agent: "codex",
+          configDir: "~/Development/inkitt/.codex",
+          enabled: false,
+          id: "inkitt-codex",
+          model: "Provider/model",
+          name: "Inkitt Codex",
+          scope: "custom"
+        },
+        {
+          agent: "claude-code",
+          configDir: "   ",
+          enabled: false,
+          id: "blank-dir",
+          model: "Provider/model",
+          name: "Blank",
+          scope: "custom"
+        }
+      ]
+    }
+  });
+
+  const loaded = await loadAppConfig();
+  const byId = Object.fromEntries(loaded.profile.profiles.map((item) => [item.id, item]));
+  assert.equal(byId["inkitt-claude"].configDir, "~/Development/inkitt/.claude");
+  assert.equal(byId["inkitt-claude"].scope, "custom");
+  assert.equal(byId["inkitt-codex"].configDir, "~/Development/inkitt/.codex");
+  assert.equal(byId["blank-dir"].configDir, undefined);
+});
