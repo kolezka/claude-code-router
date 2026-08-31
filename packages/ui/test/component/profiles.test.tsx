@@ -6,7 +6,7 @@ import type { ProfileConfig } from "@ccr/core/contracts/app.ts";
 import { AddProfileForm, DeleteProfileDialog, ProfileView } from "@ccr/ui/pages/home/components/profiles.tsx";
 import { normalizeConfig } from "@ccr/ui/pages/home/shared/config.ts";
 import { AppI18nContext, appCopy } from "@ccr/ui/pages/home/shared/i18n.tsx";
-import { createProfileDraft, createProfileDraftFromProfile, isProfileDraftSubmittable, normalizeUnknownProfileItem, profileAgentLogoUrl, profileConfigDirFormatError, profileConfigFromDraft, profileDraftWithDetectedAppPath, profileSummaryItems } from "@ccr/ui/pages/home/shared/profiles.ts";
+import { createProfileDraft, createProfileDraftFromProfile, isProfileDraftSubmittable, normalizeUnknownProfileItem, profileAgentLogoUrl, profileConfigDirCollision, profileConfigDirFormatError, profileConfigFromDraft, profileDraftWithDetectedAppPath, profileSummaryItems } from "@ccr/ui/pages/home/shared/profiles.ts";
 import { profileScopeOptions } from "../../src/pages/home/shared/options.ts";
 import { appConfigFixture } from "../fixtures/index.ts";
 
@@ -904,4 +904,51 @@ test("a blank or relative custom config directory is rejected", () => {
   assert.equal(profileConfigDirFormatError({ ...createProfileDraft("claude-code"), configDir: "/abs/path", scope: "custom" }), undefined);
   // Not applicable outside custom scope.
   assert.equal(profileConfigDirFormatError({ ...createProfileDraft("claude-code"), configDir: "  ", scope: "ccr" }), undefined);
+});
+
+test("a custom config directory colliding with another enabled profile is detected", () => {
+  const existing: ProfileConfig = {
+    agent: "claude-code",
+    configDir: "~/Development/inkitt/.claude",
+    enabled: true,
+    id: "inkitt-claude",
+    model: "Provider/model",
+    name: "Inkitt Claude",
+    scope: "custom"
+  };
+
+  // The same directory spelled differently still collides.
+  const collision = profileConfigDirCollision(
+    { ...createProfileDraft("claude-code"), configDir: "~/Development/inkitt/foo/../.claude", scope: "custom" },
+    [existing]
+  );
+  assert.equal(collision?.id, "inkitt-claude");
+
+  // A disabled neighbour does not collide.
+  assert.equal(
+    profileConfigDirCollision(
+      { ...createProfileDraft("claude-code"), configDir: "~/Development/inkitt/.claude", scope: "custom" },
+      [{ ...existing, enabled: false }]
+    ),
+    undefined
+  );
+
+  // Editing the profile itself is not a collision with itself.
+  assert.equal(
+    profileConfigDirCollision(
+      { ...createProfileDraft("claude-code"), configDir: "~/Development/inkitt/.claude", scope: "custom" },
+      [existing],
+      "inkitt-claude"
+    ),
+    undefined
+  );
+
+  // A different directory is fine.
+  assert.equal(
+    profileConfigDirCollision(
+      { ...createProfileDraft("claude-code"), configDir: "~/Development/other/.claude", scope: "custom" },
+      [existing]
+    ),
+    undefined
+  );
 });

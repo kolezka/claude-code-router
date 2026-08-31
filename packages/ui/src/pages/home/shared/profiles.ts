@@ -31,7 +31,7 @@ import {
 } from "./fallbacks";
 
 import { isPlainRecord, normalizeProviderModelSelector, stringValue, uniqueStrings } from "./common";
-import { virtualModelProfileModelNames } from "./providers";
+import { normalizeLocalAgentConfigDirForComparison, virtualModelProfileModelNames } from "./providers";
 import { normalizeRouterRules } from "./routing";
 import { endpointFromHostPort } from "./services";
 import { keyValueRowsFromRecord, recordFromKeyValueRows, stringRecordValue, validateProfileEnvRows } from "./virtual-models";
@@ -575,6 +575,30 @@ export function createProfileDraftFromProfile(profile: ProfileConfig, botConfigs
     showAllSessions: profile.agent === "zcode" || profile.agent === "opencode" || profile.agent === "kilo" || profile.agent === "workbuddy" ? false : Boolean(profile.showAllSessions),
     surface
   };
+}
+
+// Two profiles writing to one directory would fight over the same settings file.
+// Paths are compared normalized, so "a/foo/../b" and "a/b" collide.
+export function profileConfigDirCollision(
+  draft: AddProfileDraft,
+  existingProfiles: ProfileConfig[],
+  editingProfileId?: string
+): ProfileConfig | undefined {
+  if (draft.scope !== "custom" || (draft.agent !== "claude-code" && draft.agent !== "codex")) {
+    return undefined;
+  }
+  const value = draft.configDir.trim();
+  if (!value) {
+    return undefined;
+  }
+  const target = normalizeLocalAgentConfigDirForComparison(value);
+  return existingProfiles.find((profile) => {
+    if (!profile.enabled || profile.id === editingProfileId || profile.scope !== "custom") {
+      return false;
+    }
+    const other = profile.configDir?.trim();
+    return other !== undefined && normalizeLocalAgentConfigDirForComparison(other) === target;
+  });
 }
 
 export function profileConfigDirFormatError(draft: AddProfileDraft): string | undefined {
