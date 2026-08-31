@@ -151,6 +151,16 @@ const webClientBridge: CcrApi = {
   openExternal: async (url) => {
     window.open(normalizeExternalHttpUrl(url), "_blank", "noopener,noreferrer");
   },
+  openPluginApp: async (pluginId, appId) => {
+    const target = await rpc("openPluginApp", [pluginId, appId]) as { title: string; url: string };
+    // The desktop app has a plugin-app window; the browser gets a tab. "noopener" would make
+    // window.open return null even on success, so sever the opener by hand instead.
+    const tab = window.open(target.url, "_blank");
+    if (!tab) {
+      throw new Error("Your browser blocked the plugin app tab. Allow pop-ups for CCR, then try again.");
+    }
+    tab.opener = null;
+  },
   openProfile: (request) => rpc("openProfile", [request]) as ReturnType<CcrApi["openProfile"]>,
   probeLocalAgentProvider: (request) => rpc("probeLocalAgentProvider", [request]) as ReturnType<NonNullable<CcrApi["probeLocalAgentProvider"]>>,
   probeProvider: (request) => rpc("probeProvider", [request]) as ReturnType<CcrApi["probeProvider"]>,

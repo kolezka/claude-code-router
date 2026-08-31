@@ -163,3 +163,91 @@ export function isLegacyClaudeDesignUrl(value: string): boolean {
     return false;
   }
 }
+
+export type PluginAppOpenRequest = {
+  appId?: string;
+  pluginId: string;
+};
+
+export type PluginAppOpenTarget = {
+  title: string;
+  url: string;
+};
+
+// Shared by the Electron plugin-app window and the web UI's plugin-app tab.
+export function resolvePluginAppOpenUrl(config: AppConfig, request: PluginAppOpenRequest): PluginAppOpenTarget {
+  const pluginApp = resolvePluginApp(config, request);
+  if (!pluginApp) {
+    throw new Error(`Plugin app is not configured or enabled: ${request.pluginId}`);
+  }
+  return {
+    title: pluginApp.name,
+    url: resolveGatewayPluginAppUrl(config, pluginAppUrlForOpen(config, request.pluginId, pluginApp.url))
+  };
+}
+
+export function resolvePluginApp(
+  config: Pick<AppConfig, "plugins">,
+  request: PluginAppOpenRequest
+): GatewayPluginAppConfig | undefined {
+  const plugin = config.plugins.find((candidate) => candidate.enabled !== false && candidate.id === request.pluginId);
+  if (!plugin) {
+    return builtInPluginAppForOpen(request.pluginId, request.appId);
+  }
+
+  const apps = configuredPluginApps(plugin.id, plugin.apps);
+  if (!apps.length) {
+    return undefined;
+  }
+
+  if (request.appId) {
+    return apps.find((app) => (app.id || app.name) === request.appId);
+  }
+  return apps[0];
+}
+
+function configuredPluginApps(pluginId: string, apps: GatewayPluginAppConfig[] | undefined): GatewayPluginAppConfig[] {
+  if (apps?.length) {
+    return apps;
+  }
+  return knownGatewayPluginDefaultApps(pluginId) || [];
+}
+
+export function resolveGatewayPluginAppUrl(config: AppConfig, url: string): string {
+  const trimmed = normalizePluginAppUrl(url);
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+  const urlPath = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  const host = normalizeGatewayPluginAppHost(config.gateway?.host || config.HOST || "127.0.0.1");
+  const port = config.gateway?.port || config.PORT || 3456;
+  return `http://${host}:${port}${urlPath}`;
+}
+
+function normalizePluginAppUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error("Plugin app URL is required.");
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    return new URL(trimmed).toString();
+  }
+  if (trimmed.startsWith("//")) {
+    throw new Error("Plugin app URL cannot be protocol-relative.");
+  }
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) {
+    throw new Error("Plugin app URL must be an http(s) URL or a CCR gateway path.");
+  }
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
+function normalizeGatewayPluginAppHost(host: string): string {
+  const trimmed = host.trim();
+  if (!trimmed || trimmed === "0.0.0.0" || trimmed === "::") {
+    return "127.0.0.1";
+  }
+  if (trimmed.includes(":") && !trimmed.startsWith("[")) {
+    return `[${trimmed}]`;
+  }
+  return trimmed;
+}
