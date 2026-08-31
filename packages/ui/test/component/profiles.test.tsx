@@ -474,6 +474,58 @@ test("ProfileView renders agent profiles as compact cards with inline actions", 
   assert.doesNotMatch(html, /aria-label="Copy CLI command ZCode Main"/);
 });
 
+test("ProfileView warns only disabled custom-directory profiles about retained CCR entries", () => {
+  const renderProfile = (candidate: ProfileConfig, copy = appCopy.en) => {
+    const config = appConfigFixture();
+    config.profile.profiles = [candidate];
+    return renderToStaticMarkup(
+      <AppI18nContext.Provider value={copy}>
+        <ProfileView
+          addProfile={() => undefined}
+          applyError=""
+          config={config}
+          copyProfileCliCommand={() => undefined}
+          editProfile={() => undefined}
+          openProfileApp={() => undefined}
+          profileRuntimeStatus={{ profiles: [] }}
+          removeProfile={() => undefined}
+          stopProfileApp={() => undefined}
+          updateProfileItem={() => undefined}
+        />
+      </AppI18nContext.Provider>
+    );
+  };
+  const disabledCustomClaude: ProfileConfig = {
+    ...profile,
+    configDir: "~/Development/inkitt/.claude",
+    enabled: false,
+    scope: "custom"
+  };
+
+  const claudeHtml = renderProfile(disabledCustomClaude);
+  assert.match(
+    claudeHtml,
+    /CCR left its entries in ~\/Development\/inkitt\/\.claude\/settings\.json\. Remove them manually or re-enable this profile\./
+  );
+
+  const codexHtml = renderProfile({
+    agent: "codex",
+    configDir: "~/Development/inkitt/.codex",
+    enabled: false,
+    id: "codex-main",
+    model: "Provider/model",
+    name: "Codex Main",
+    scope: "custom"
+  });
+  assert.match(codexHtml, /~\/Development\/inkitt\/\.codex\/config\.toml/);
+
+  const chineseHtml = renderProfile(disabledCustomClaude, appCopy.zh);
+  assert.match(chineseHtml, /CCR 已将其配置项保留在 ~\/Development\/inkitt\/\.claude\/settings\.json 中。请手动移除这些配置项，或重新启用此配置档案。/);
+
+  assert.doesNotMatch(renderProfile({ ...disabledCustomClaude, enabled: true }), /CCR left its entries/);
+  assert.doesNotMatch(renderProfile({ ...disabledCustomClaude, scope: "ccr" }), /CCR left its entries/);
+});
+
 test("profileSummaryItems uses Kimi-specific model labels", () => {
   const config = appConfigFixture();
   const items = profileSummaryItems({

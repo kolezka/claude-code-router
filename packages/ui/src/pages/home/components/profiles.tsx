@@ -22,6 +22,23 @@ type ProfileActionBusy = {
   surface: ProfileOpenSurface;
 };
 
+function retainedCustomProfileConfigFile(profile: ProfileConfig): string | undefined {
+  if (profile.enabled || normalizeProfileScope(profile.scope) !== "custom") {
+    return undefined;
+  }
+  if (profile.agent !== "claude-code" && profile.agent !== "codex") {
+    return undefined;
+  }
+  const configDir = profile.configDir?.trim();
+  if (!configDir) {
+    return undefined;
+  }
+  const separatorIndex = Math.max(configDir.lastIndexOf("/"), configDir.lastIndexOf("\\"));
+  const separator = separatorIndex >= 0 && configDir[separatorIndex] === "\\" ? "\\" : "/";
+  const filename = profile.agent === "claude-code" ? "settings.json" : "config.toml";
+  return `${configDir.replace(/[\\/]+$/, "")}${separator}${filename}`;
+}
+
 export function ProfileView({
   addProfile,
   applyError,
@@ -103,6 +120,7 @@ export function ProfileView({
               const cliActionTooltip = `${t("Copy")} ${t("CLI command")}`;
               const showProfileLaunchActions = profile.enabled;
               const profileActionDisabled = Boolean(profileActionBusy);
+              const retainedConfigFile = retainedCustomProfileConfigFile(profile);
 
               return (
                 <div
@@ -153,6 +171,14 @@ export function ProfileView({
                         <div className="min-w-0 truncate font-medium text-foreground" title={item.value}>{item.value}</div>
                       </div>
                     ))}
+                    {retainedConfigFile ? (
+                      <div className="mt-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-[11px] leading-4 text-amber-700 dark:text-amber-300" role="status">
+                        <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span className="min-w-0 break-all">
+                          {t("CCR left its entries in {file}. Remove them manually or re-enable this profile.").replace("{file}", () => retainedConfigFile)}
+                        </span>
+                      </div>
+                    ) : null}
                     {runtimeEntry?.botGateway ? (
                       <div className="grid min-w-0 grid-cols-[92px_minmax(0,1fr)] items-baseline gap-2 text-[12px]">
                         <div className="truncate text-muted-foreground">{t("Bot activity")}</div>
