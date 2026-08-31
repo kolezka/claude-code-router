@@ -10,6 +10,7 @@ import { findProviderPreset, findProviderPresetByBaseUrl } from "@ccr/core/provi
 
 type CatalogProviderEntry = {
   apiUrls: string[];
+  apiUrlKeys: ProviderUrlKey[];
   modelDisplayNames: Record<string, string>;
   modelMetadata: Record<string, ProviderModelMetadata>;
   models: string[];
@@ -23,7 +24,7 @@ type CatalogIndex = {
   providers: CatalogProviderEntry[];
 };
 
-type MutableCatalogProviderEntry = Omit<CatalogProviderEntry, "apiUrls" | "models" | "tokens"> & {
+type MutableCatalogProviderEntry = Omit<CatalogProviderEntry, "apiUrls" | "apiUrlKeys" | "models" | "tokens"> & {
   apiUrls: Set<string>;
   models: string[];
   modelSet: Set<string>;
@@ -72,7 +73,32 @@ const presetCatalogModelOverrides: Record<string, CatalogProviderModelOverride> 
 
 let catalogIndex: CatalogIndex | undefined;
 
+// Callers resolve the same handful of providers thousands of times per run, so
+// the scan over every catalog provider is memoized on the request shape.
+const catalogResultCache = new Map<string, ProviderCatalogModelsResult>();
+
+function catalogRequestCacheKey(request: ProviderCatalogModelsRequest): string {
+  return JSON.stringify([
+    request.baseUrl ?? "",
+    request.name ?? "",
+    request.providerPresetId ?? "",
+    request.providerIds ?? []
+  ]);
+}
+
 export function getProviderCatalogModels(request: ProviderCatalogModelsRequest): ProviderCatalogModelsResult {
+  const cacheKey = catalogRequestCacheKey(request);
+  const cached = catalogResultCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const result = computeProviderCatalogModels(request);
+  catalogResultCache.set(cacheKey, result);
+  return result;
+}
+
+function computeProviderCatalogModels(request: ProviderCatalogModelsRequest): ProviderCatalogModelsResult {
   const index = loadCatalogIndex();
   const modelOverride = providerCatalogModelOverride(request);
   if (modelOverride) {
@@ -226,6 +252,10 @@ function buildCatalogIndex(payload: unknown, loadedFrom: string): CatalogIndex {
     loadedFrom,
     providers: Array.from(providers.values()).map((entry) => ({
       apiUrls: Array.from(entry.apiUrls),
+      // Parse each provider URL once here; matching runs on every lookup.
+      apiUrlKeys: Array.from(entry.apiUrls)
+        .map((apiUrl) => providerUrlKey(apiUrl))
+        .filter((key): key is ProviderUrlKey => key !== undefined),
       modelDisplayNames: entry.modelDisplayNames,
       modelMetadata: entry.modelMetadata,
       models: sortCatalogProviderModels(entry.models),
@@ -532,11 +562,7 @@ function providerNameLookupTokens(request: ProviderCatalogModelsRequest): string
 
 function catalogProviderUrlScore(entry: CatalogProviderEntry, urlKeys: ProviderUrlKey[]): number | undefined {
   let bestScore: number | undefined;
-  for (const apiUrl of entry.apiUrls) {
-    const apiKey = providerUrlKey(apiUrl);
-    if (!apiKey) {
-      continue;
-    }
+  for (const apiKey of entry.apiUrlKeys) {
     for (const key of urlKeys) {
       const score = providerUrlMatchScore(apiKey, key);
       if (score === undefined) {
