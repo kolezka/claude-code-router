@@ -6,7 +6,7 @@ import type { AppConfig, ProfileConfig } from "@ccr/core/contracts/app";
 import { botGatewayProfileEnv } from "@ccr/core/agents/bot-gateway/env";
 import { buildCodexModelCatalog, type CodexModelCatalog, type CodexModelCatalogItem } from "@ccr/core/agents/codex/model-catalog";
 import { prepareCodexAppCdpUserDataDir } from "@ccr/core/agents/codex/media-preview-bridge";
-import { buildProfileLaunchPlan, resolveCodexConfigFile } from "@ccr/core/profiles/launch-core";
+import { buildProfileLaunchPlan, ccrManagedProfileDir, resolveCodexConfigFile, resolveProfileConfigDir } from "@ccr/core/profiles/launch-core";
 import { normalizeWindowsDesktopAppCandidate, windowsDesktopAppCandidates } from "@ccr/core/platform/windows-app-discovery";
 import { buildZcodeModelCatalog } from "@ccr/core/agents/zcode/model-catalog";
 import { writeZcodeGatewayConfig, zcodeHomeFromConfigFile } from "@ccr/core/agents/zcode/profile-config";
@@ -287,10 +287,11 @@ export function writeCodexCompatibleAppModelCatalog(
   const spec = codexCompatibleAppSpecForProfile(profile);
   const configFile = resolveCodexConfigFile(configDir, profile);
   const codexHome = codexCompatibleHomeFromConfigFile(spec, configFile);
+  const appStorageHome = codexCompatibleAppStorageHome(configDir, profile, spec);
   if (spec.kind === "codex") {
-    removeLegacyCodexVirtualAuthMarker(codexHome);
+    removeLegacyCodexVirtualAuthMarker(appStorageHome);
   }
-  const userDataDir = codexElectronUserDataDir(codexHome, profile, spec);
+  const userDataDir = codexElectronUserDataDir(appStorageHome, profile, spec);
   mkdirSync(userDataDir, { recursive: true });
   const file = codexAppModelCatalogFile(userDataDir, spec);
   const content = codexCompatibleAppModelCatalogJson(config, profile.model, spec.kind, profileAllowedModels(profile));
@@ -1003,6 +1004,17 @@ function codexElectronUserDataDir(codexHome: string, profile: ProfileConfig, spe
 
 function codexAppModelCatalogFile(userDataDir: string, spec: CodexCompatibleAppSpec): string {
   return path.join(userDataDir, spec.modelCatalogFilename);
+}
+
+function codexCompatibleAppStorageHome(
+  configDir: string,
+  profile: ProfileConfig,
+  spec: CodexCompatibleAppSpec
+): string {
+  if (resolveProfileConfigDir(profile)) {
+    return path.join(ccrManagedProfileDir(configDir, profile), "codex");
+  }
+  return codexCompatibleHomeFromConfigFile(spec, resolveCodexConfigFile(configDir, profile));
 }
 
 function codexCompatibleHomeFromConfigFile(spec: CodexCompatibleAppSpec, configFile: string): string {
