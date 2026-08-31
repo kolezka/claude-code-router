@@ -3,9 +3,12 @@ import test from "node:test";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ProfileConfig } from "@ccr/core/contracts/app.ts";
+import { onboardingProfileReplacementIndex, profileEnableConfigDirCollision } from "@ccr/ui/pages/home/App.tsx";
 import { AddProfileForm, DeleteProfileDialog, ProfileView } from "@ccr/ui/pages/home/components/profiles.tsx";
+import { normalizeConfig } from "@ccr/ui/pages/home/shared/config.ts";
 import { AppI18nContext, appCopy } from "@ccr/ui/pages/home/shared/i18n.tsx";
-import { createProfileDraft, createProfileDraftFromProfile, isProfileDraftSubmittable, normalizeUnknownProfileItem, profileAgentLogoUrl, profileConfigFromDraft, profileDraftWithDetectedAppPath, profileSummaryItems } from "@ccr/ui/pages/home/shared/profiles.ts";
+import { createProfileDraft, createProfileDraftFromProfile, isProfileDraftSubmittable, normalizeUnknownProfileItem, profileAgentLogoUrl, profileConfigDirCollision, profileConfigDirFormatError, profileConfigFromDraft, profileDraftWithDetectedAppPath, profileSummaryItems } from "@ccr/ui/pages/home/shared/profiles.ts";
+import { profileScopeOptions } from "../../src/pages/home/shared/options.ts";
 import { appConfigFixture } from "../fixtures/index.ts";
 
 const profile: ProfileConfig = {
@@ -782,4 +785,213 @@ test("Workbuddy profiles support local App configuration", () => {
   assert.equal(profile?.surface, "app");
   assert.match(profileAgentLogoUrl("workbuddy"), /workbuddy/i);
   assert.notEqual(profileAgentLogoUrl("workbuddy"), profileAgentLogoUrl("codex"));
+});
+
+test("custom scope survives normalization and an edit round-trip with configDir", () => {
+  const serializedProfile = {
+    agent: "claude-code" as const,
+    configDir: "~/Development/inkitt/.claude",
+    enabled: true,
+    id: "inkitt-claude",
+    model: "Provider/model",
+    name: "Inkitt Claude",
+    scope: "custom" as const
+  };
+  const normalizedConfig = normalizeConfig({
+    ...appConfigFixture(),
+    profile: {
+      ...appConfigFixture().profile,
+      profiles: [serializedProfile]
+    }
+  });
+  const profile = normalizedConfig.profile.profiles[0];
+  assert.ok(profile);
+
+  const draft = createProfileDraftFromProfile(profile);
+  assert.equal(draft.scope, "custom");
+  assert.equal(draft.configDir, "~/Development/inkitt/.claude");
+
+  const roundTripped = profileConfigFromDraft(draft, normalizedConfig.profile.profiles, profile);
+  assert.equal(roundTripped.scope, "custom");
+  assert.equal(roundTripped.configDir, "~/Development/inkitt/.claude");
+});
+
+test("configDir is dropped when the scope is not custom", () => {
+  const draft = { ...createProfileDraft("claude-code"), configDir: "~/somewhere", scope: "ccr" as const };
+  const config = profileConfigFromDraft(draft, []);
+  assert.equal(config.configDir, undefined);
+});
+
+test("the custom scope option is offered", () => {
+  assert.equal(profileScopeOptions.some((option) => option.value === "custom"), true);
+});
+
+test("blank custom configDir preserves existing profile serialization", () => {
+  const expected = "{\"agent\":\"claude-code\",\"enabled\":true,\"env\":{\"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY\":\"1\"},\"fableModel\":\"\",\"haikuModel\":\"\",\"id\":\"claude-code\",\"managedCompact\":false,\"model\":\"\",\"name\":\"Claude Code\",\"opusModel\":\"\",\"scope\":\"custom\",\"settingsFile\":\"~/.claude/settings.json\",\"sonnetModel\":\"\",\"smallFastModel\":\"\",\"surface\":\"cli\"}";
+
+  for (const configDir of ["", "   "]) {
+    const config = profileConfigFromDraft({ ...createProfileDraft("claude-code"), configDir, scope: "custom" }, []);
+    assert.equal(Object.hasOwn(config, "configDir"), false);
+    assert.equal(JSON.stringify(config), expected);
+  }
+
+  const loadedProfile: ProfileConfig = {
+    agent: "claude-code",
+    enabled: true,
+    id: "claude-code",
+    model: "",
+    name: "Claude Code",
+    scope: "custom",
+    surface: "cli"
+  };
+  const config = profileConfigFromDraft(createProfileDraftFromProfile(loadedProfile), [loadedProfile], loadedProfile);
+  assert.equal(Object.hasOwn(config, "configDir"), false);
+  assert.equal(JSON.stringify(config), expected);
+});
+
+test("configDir is dropped for unsupported custom-scope agents", () => {
+  const draft = { ...createProfileDraft("opencode"), configDir: "~/somewhere", scope: "custom" as const };
+  const config = profileConfigFromDraft(draft, []);
+  assert.equal(config.configDir, undefined);
+});
+
+test("custom scope preserves configDir for Codex", () => {
+  const profile = {
+    agent: "codex" as const,
+    configDir: "~/.codex-work",
+    enabled: true,
+    id: "codex-work",
+    model: "Provider/model",
+    name: "Codex Work",
+    scope: "custom" as const
+  };
+
+  const roundTripped = profileConfigFromDraft(createProfileDraftFromProfile(profile), [profile], profile);
+  assert.equal(roundTripped.configDir, "~/.codex-work");
+});
+
+test("the configuration directory field appears only for custom scope", () => {
+  const config = appConfigFixture();
+  const customHtml = renderToStaticMarkup(
+    <AddProfileForm
+      botConfigs={config.botConfigs}
+      draft={{ ...createProfileDraft("claude-code"), configDir: "~/Development/inkitt/.claude", scope: "custom" }}
+      error=""
+      onChange={() => undefined}
+      onCreateBot={() => undefined}
+      providers={config.Providers}
+    />
+  );
+  assert.match(customHtml, /Configuration directory/);
+  assert.match(customHtml, /~\/Development\/inkitt\/\.claude/);
+
+  const ccrHtml = renderToStaticMarkup(
+    <AddProfileForm
+      botConfigs={config.botConfigs}
+      draft={{ ...createProfileDraft("claude-code"), scope: "ccr" }}
+      error=""
+      onChange={() => undefined}
+      onCreateBot={() => undefined}
+      providers={config.Providers}
+    />
+  );
+  assert.equal(/Configuration directory/.test(ccrHtml), false);
+});
+
+test("a blank or relative custom config directory is rejected", () => {
+  assert.equal(Boolean(profileConfigDirFormatError({ ...createProfileDraft("claude-code"), configDir: "  ", scope: "custom" })), true);
+  assert.equal(Boolean(profileConfigDirFormatError({ ...createProfileDraft("claude-code"), configDir: "relative/path", scope: "custom" })), true);
+  assert.equal(profileConfigDirFormatError({ ...createProfileDraft("claude-code"), configDir: "~/Development/inkitt/.claude", scope: "custom" }), undefined);
+  assert.equal(profileConfigDirFormatError({ ...createProfileDraft("claude-code"), configDir: "/abs/path", scope: "custom" }), undefined);
+  // Not applicable outside custom scope.
+  assert.equal(profileConfigDirFormatError({ ...createProfileDraft("claude-code"), configDir: "  ", scope: "ccr" }), undefined);
+});
+
+test("onboarding can replace its enabled custom profile without a configuration directory collision", () => {
+  const existing: ProfileConfig = {
+    agent: "claude-code",
+    configDir: "~/Development/inkitt/.claude",
+    enabled: true,
+    id: "inkitt-claude",
+    model: "Provider/model",
+    name: "Inkitt Claude",
+    scope: "custom"
+  };
+  const draft = createProfileDraftFromProfile(existing);
+  const replacementIndex = onboardingProfileReplacementIndex("onboarding", [existing], draft.agent);
+
+  assert.equal(replacementIndex, 0);
+  assert.equal(
+    profileConfigDirCollision(draft, [existing], [existing][replacementIndex]?.id),
+    undefined
+  );
+});
+
+test("re-enabling a custom profile rejects a directory claimed while it was disabled", () => {
+  const disabledProfile: ProfileConfig = {
+    agent: "claude-code",
+    configDir: "~/Development/inkitt/.claude",
+    enabled: false,
+    id: "inkitt-claude",
+    model: "Provider/model",
+    name: "Inkitt Claude",
+    scope: "custom"
+  };
+  const enabledProfile: ProfileConfig = {
+    ...disabledProfile,
+    enabled: true,
+    id: "personal-claude",
+    name: "Personal Claude"
+  };
+  assert.equal(
+    profileEnableConfigDirCollision([disabledProfile, enabledProfile], 0)?.id,
+    "personal-claude"
+  );
+});
+
+test("a custom config directory colliding with another enabled profile is detected", () => {
+  const existing: ProfileConfig = {
+    agent: "claude-code",
+    configDir: "~/Development/inkitt/.claude",
+    enabled: true,
+    id: "inkitt-claude",
+    model: "Provider/model",
+    name: "Inkitt Claude",
+    scope: "custom"
+  };
+
+  // The same directory spelled differently still collides.
+  const collision = profileConfigDirCollision(
+    { ...createProfileDraft("claude-code"), configDir: "~/Development/inkitt/foo/../.claude", scope: "custom" },
+    [existing]
+  );
+  assert.equal(collision?.id, "inkitt-claude");
+
+  // A disabled neighbour does not collide.
+  assert.equal(
+    profileConfigDirCollision(
+      { ...createProfileDraft("claude-code"), configDir: "~/Development/inkitt/.claude", scope: "custom" },
+      [{ ...existing, enabled: false }]
+    ),
+    undefined
+  );
+
+  // Editing the profile itself is not a collision with itself.
+  assert.equal(
+    profileConfigDirCollision(
+      { ...createProfileDraft("claude-code"), configDir: "~/Development/inkitt/.claude", scope: "custom" },
+      [existing],
+      "inkitt-claude"
+    ),
+    undefined
+  );
+
+  // A different directory is fine.
+  assert.equal(
+    profileConfigDirCollision(
+      { ...createProfileDraft("claude-code"), configDir: "~/Development/other/.claude", scope: "custom" },
+      [existing]
+    ),
+    undefined
+  );
 });

@@ -5,7 +5,7 @@ import {
   cn, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader,
   DialogTitle, Field, GatewayProviderConfig, Info, Input, KeyValueRowsControl, LoaderCircle, motion,
   normalizeProfileScope, normalizeProfileSurface, Pencil, Plus, PopoverContent,
-  profileAgentLabel, profileAgentOptions, ProfileConfig, type ProfileAgentOption, profileModelProviderOptions, profileOpenSurfaces, profileScopeLabel, profileScopeOptions, profileSummaryItems, profileSurfaceLabel, profileSurfaceOptions,
+  profileAgentLabel, profileAgentOptions, profileConfigDirFormatError, ProfileConfig, type ProfileAgentOption, profileModelProviderOptions, profileOpenSurfaces, profileScopeLabel, profileScopeOptions, profileSummaryItems, profileSurfaceLabel, profileSurfaceOptions,
   Play, Power, RefreshCw, Select, SelectControl, Terminal, Toggle, translateOptions, Trash2, useAppErrorText, useAppText, useLayoutEffect, type ProfileOpenSurface, type ProfileRuntimeStatus, type ReactDragEvent, type ReactNode, type VirtualModelProfileConfig,
   copyTextToClipboard, formatRouterRuleCondition, formatRouterRuleTarget, isRoutingRuleDraftSubmittable, normalizeProviderModelSelector, routerRuleTypeLabel, routingRuleFromDraft, type RouterRule, uniqueStrings, validateProfileEnvRows,
   useCallback, useEffect, useMemo, useRef, useState, X
@@ -816,12 +816,25 @@ export function AddProfileForm({
               draft.agent === "grok" || draft.agent === "kimi" || draft.agent === "pi"
                 || draft.agent === "claude-design"
                 ? profileScopeOptions.filter((option) => option.value === "ccr")
-                : profileScopeOptions,
+                : draft.agent === "claude-code" || draft.agent === "codex"
+                    ? profileScopeOptions
+                    : profileScopeOptions.filter((option) => option.value !== "custom"),
               t
             )}
             value={draft.scope}
           />
         </Field>
+        {draft.scope === "custom" && (draft.agent === "claude-code" || draft.agent === "codex") ? (
+          <Field label={t("Configuration directory")} requirement="required" requirementLabel={requiredFieldLabel}>
+            <Input
+              aria-label={t("Configuration directory")}
+              onChange={(event) => onChange({ configDir: event.target.value })}
+              placeholder={draft.agent === "codex" ? "~/.codex" : "~/.claude"}
+              value={draft.configDir}
+            />
+            {validation.configDir ? <ProfileFieldHint>{t(validation.configDir)}</ProfileFieldHint> : null}
+          </Field>
+        ) : null}
         <Field label={t("Entry mode")} requirement="required" requirementLabel={requiredFieldLabel}>
           <SelectControl
             onChange={(surface) => {
@@ -1280,10 +1293,14 @@ function profileDraftValidation(
   draft: AddProfileDraft,
   botConfigs: BotGatewaySavedConfig[],
   availableModelCount: number
-): Partial<Record<"allowedModels" | "bot" | "defaultModel" | "env" | "handoff" | "kimiModel" | "models" | "name", string>> {
-  const issues: Partial<Record<"allowedModels" | "bot" | "defaultModel" | "env" | "handoff" | "kimiModel" | "models" | "name", string>> = {};
+): Partial<Record<"allowedModels" | "bot" | "configDir" | "defaultModel" | "env" | "handoff" | "kimiModel" | "models" | "name", string>> {
+  const issues: Partial<Record<"allowedModels" | "bot" | "configDir" | "defaultModel" | "env" | "handoff" | "kimiModel" | "models" | "name", string>> = {};
   if (!draft.name.trim()) {
     issues.name = "Profile name is required.";
+  }
+  const configDirIssue = profileConfigDirFormatError(draft);
+  if (configDirIssue) {
+    issues.configDir = configDirIssue;
   }
   if (draft.agent !== "claude-design" && availableModelCount === 0) {
     issues.models = "Configure at least one enabled provider model before saving an agent profile.";
