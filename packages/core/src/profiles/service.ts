@@ -398,6 +398,7 @@ function applyClaudeDesignProfile(profile: ProfileConfig, appliedAt: string): Pr
 
 function applyClaudeCodeProfile(config: AppConfig, profile: ProfileConfig, token: string, appliedAt: string): ProfileClientApplyStatus {
   const settingsFile = resolveClaudeCodeSettingsFile(profile);
+  const backupDir = profileBackupDir(profile);
   if (!profile.enabled) {
     cleanupClaudeCodeGeneratedFiles(profile);
     return restoreDisabledGlobalProfile(profile, settingsFile, "Claude Code profile is disabled.", isManagedClaudeCodeSettingsContent);
@@ -447,10 +448,10 @@ function applyClaudeCodeProfile(config: AppConfig, profile: ProfileConfig, token
       remoteSyncApiKeyFile: wifResult.file,
       wifIdentityTokenFile: authMode === "wif" ? wifResult.file : undefined
     }, toolHubMcpConfigResult.file);
-    const autoCompactResult = writeClaudeCodeAutoCompactWindowsCache(config, settingsFile);
+    const autoCompactResult = writeClaudeCodeAutoCompactWindowsCache(config, settingsFile, backupDir);
     const nextSettings = claudeCodeNextSettings(settings, env, authMode, helperResult?.file);
     const managedEnvKeys = claudeCodeManagedSettingsEnvKeys(profileEnvValues, mcpConfigEnv, timezoneEnv, wifEnv);
-    const writeResult = writeClaudeCodeSettingsIfManagedChanged(settingsFile, settings, nextSettings, managedEnvKeys);
+    const writeResult = writeClaudeCodeSettingsIfManagedChanged(settingsFile, settings, nextSettings, managedEnvKeys, backupDir);
     const changed = writeResult.changed ||
       Boolean(helperResult?.changed) ||
       wifResult.changed ||
@@ -542,6 +543,7 @@ function writeClaudeModelDiscoveryFingerprintState(state: Record<string, unknown
 function applyCodexProfile(config: AppConfig, profile: ProfileConfig, token: string, appliedAt: string): ProfileClientApplyStatus {
   const clientName = codexCompatibleClientName(profile.agent);
   const configFile = resolveCodexConfigFile(profile);
+  const backupDir = profileBackupDir(profile);
   if (!profile.enabled) {
     return restoreDisabledGlobalProfile(
       profile,
@@ -562,7 +564,8 @@ function applyCodexProfile(config: AppConfig, profile: ProfileConfig, token: str
     const profileWithResolvedModel = { ...profile, model };
     const modelCatalogResult = writeFileWithBackup(
       modelCatalogFile,
-      codexModelCatalogJson(config, model, { allowedModels: profileAllowedModels(profileWithResolvedModel) })
+      codexModelCatalogJson(config, model, { allowedModels: profileAllowedModels(profileWithResolvedModel) }),
+      { backupDir }
     );
     const appModelCatalogResult = writeCodexCompatibleAppModelCatalog(CONFIGDIR, profileWithResolvedModel, config);
     const showAllSessions = profile.agent === "zcode" || profile.agent === "workbuddy" ? false : Boolean(profile.showAllSessions);
@@ -582,13 +585,13 @@ function applyCodexProfile(config: AppConfig, profile: ProfileConfig, token: str
       token,
       toolHubMcp: toolHubMcpResult.runtime
     });
-    const writeResult = writeFileWithBackup(configFile, nextConfig, { mode: privateFileMode });
+    const writeResult = writeFileWithBackup(configFile, nextConfig, { backupDir, mode: privateFileMode });
     const separateProfileResult = maybeWriteSeparateCodexProfileFile(configFile, source, {
       configFormat,
       model,
       providerId,
       showAllSessions
-    });
+    }, backupDir);
     const middlewareResult = profile.cliMiddleware
       ? writeCodexCliMiddleware(config, profile, {
           configFormat,
@@ -1041,6 +1044,13 @@ function ccrManagedProfileDir(profile: ProfileConfig): string {
   return profile.scope === "custom" ? path.join(baseDir, "custom") : baseDir;
 }
 
+function profileBackupDir(profile: ProfileConfig): string | undefined {
+  // Custom profile files otherwise use the legacy <slug>/custom subtree.
+  return resolveProfileConfigDir(profile)
+    ? path.join(path.dirname(ccrManagedProfileDir(profile)), "backups")
+    : undefined;
+}
+
 function buildCodexConfigToml(
   source: string,
   values: {
@@ -1157,7 +1167,8 @@ function maybeWriteSeparateCodexProfileFile(
     model: string;
     providerId: string;
     showAllSessions: boolean;
-  }
+  },
+  backupDir?: string
 ): { changed: boolean; file: string } | undefined {
   if (values.configFormat !== "separate_profile_files") {
     return undefined;
@@ -1167,7 +1178,7 @@ function maybeWriteSeparateCodexProfileFile(
     ? readFileSync(file, "utf8")
     : legacyCodexProfileTableBody(source, values.providerId);
   const next = buildSeparateCodexProfileToml(previous, values);
-  const writeResult = writeFileWithBackup(file, next, { mode: privateFileMode });
+  const writeResult = writeFileWithBackup(file, next, { backupDir, mode: privateFileMode });
   return {
     changed: writeResult.changed,
     file
@@ -2267,7 +2278,8 @@ function hasClaudeCodeOneMillionContextSuffix(model: string): boolean {
 
 function writeClaudeCodeAutoCompactWindowsCache(
   config: AppConfig,
-  settingsFile: string
+  settingsFile: string,
+  backupDir?: string
 ): { backupFile?: string; changed: boolean; file: string } {
   const file = path.join(path.dirname(settingsFile), ".claude.json");
   const current = readClaudeCodeGlobalConfigObject(file);
@@ -2275,7 +2287,7 @@ function writeClaudeCodeAutoCompactWindowsCache(
     ...current,
     autoCompactWindowsCache: createClaudeCliAutoCompactWindows(config)
   };
-  const writeResult = writeFileWithBackup(file, `${JSON.stringify(next, null, 2)}\n`, { mode: privateFileMode });
+  const writeResult = writeFileWithBackup(file, `${JSON.stringify(next, null, 2)}\n`, { backupDir, mode: privateFileMode });
   return { ...writeResult, file };
 }
 
@@ -2774,13 +2786,14 @@ function writeClaudeCodeSettingsIfManagedChanged(
   file: string,
   settings: Record<string, unknown>,
   nextSettings: Record<string, unknown>,
-  managedEnvKeys: Set<string>
+  managedEnvKeys: Set<string>,
+  backupDir?: string
 ): { backupFile?: string; changed: boolean } {
   if (!claudeCodeSettingsManagedFieldsChanged(settings, nextSettings, managedEnvKeys)) {
     chmodFileIfRequested(file, privateFileMode);
     return { changed: false };
   }
-  return writeFileWithBackup(file, `${JSON.stringify(nextSettings, null, 2)}\n`, { mode: privateFileMode });
+  return writeFileWithBackup(file, `${JSON.stringify(nextSettings, null, 2)}\n`, { backupDir, mode: privateFileMode });
 }
 
 function claudeCodeSettingsManagedFieldsChanged(
@@ -2862,7 +2875,7 @@ function isClaudeCodeWifEnvKey(key: string): boolean {
 function writeFileWithBackup(
   file: string,
   content: string,
-  options: { mode?: number } = {}
+  options: { backupDir?: string; mode?: number } = {}
 ): { backupFile?: string; changed: boolean } {
   mkdirSync(path.dirname(file), { recursive: true });
   const previous = existsSync(file) ? readFileSync(file, "utf8") : undefined;
@@ -2870,8 +2883,8 @@ function writeFileWithBackup(
     chmodFileIfRequested(file, options.mode);
     return { changed: false };
   }
-  ensureOriginalSnapshot(file, previous, options.mode);
-  const backupFile = previous === undefined ? undefined : backupFilePath(file);
+  ensureOriginalSnapshot(file, previous, options.mode, options.backupDir);
+  const backupFile = previous === undefined ? undefined : backupFilePath(file, options.backupDir);
   if (backupFile) {
     copyFileSync(file, backupFile);
     chmodFileIfRequested(backupFile, options.mode);
@@ -3463,6 +3476,7 @@ function disabledRestoreStatus(
 function restoreGlobalConfigFile(
   file: string,
   options: {
+    backupDir?: string;
     isManagedContent: (content: string) => boolean;
     mode?: number;
   }
@@ -3473,23 +3487,23 @@ function restoreGlobalConfigFile(
     return { changed: false, file, missingBackup: false, restored: false };
   }
 
-  const snapshot = originalSnapshotCandidate(file, options.isManagedContent);
+  const snapshot = originalSnapshotCandidate(file, options.isManagedContent, options.backupDir);
   if (snapshot) {
     if (current === snapshot.content) {
       chmodFileIfRequested(file, options.mode);
       return { changed: false, file, missingBackup: false, restored: true };
     }
 
-    const backupFile = current === undefined ? undefined : backupCurrentConfigFile(file, options.mode);
+    const backupFile = current === undefined ? undefined : backupCurrentConfigFile(file, options.mode, options.backupDir);
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, snapshot.content, options.mode === undefined ? "utf8" : { encoding: "utf8", mode: options.mode });
     chmodFileIfRequested(file, options.mode);
     return { backupFile, changed: true, file, missingBackup: false, restored: true };
   }
 
-  if (existsSync(originalMissingFilePath(file))) {
+  if (existsSync(originalMissingFilePath(file, options.backupDir))) {
     if (currentManaged) {
-      const backupFile = backupCurrentConfigFile(file, options.mode);
+      const backupFile = backupCurrentConfigFile(file, options.mode, options.backupDir);
       rmSync(file, { force: true });
       return { backupFile, changed: true, file, missingBackup: false, restored: true };
     }
@@ -3506,12 +3520,13 @@ function restoreGlobalConfigFile(
 
 function originalSnapshotCandidate(
   file: string,
-  isManagedContent: (content: string) => boolean
+  isManagedContent: (content: string) => boolean,
+  backupDir?: string
 ): { content: string; file: string } | undefined {
   // Prefer the most recent non-CCR snapshot captured immediately before the
   // latest takeover. The permanent .ccr-original file can be stale when the
   // user changes the agent config between separate CCR sessions.
-  for (const candidate of [...backupFiles(file).reverse(), originalBackupFilePath(file)]) {
+  for (const candidate of [...backupFiles(file, backupDir).reverse(), originalBackupFilePath(file, backupDir)]) {
     if (!existsSync(candidate)) {
       continue;
     }
@@ -3523,15 +3538,15 @@ function originalSnapshotCandidate(
   return undefined;
 }
 
-function backupCurrentConfigFile(file: string, mode: number | undefined): string {
-  const backupFile = backupFilePath(file);
+function backupCurrentConfigFile(file: string, mode: number | undefined, backupDir?: string): string {
+  const backupFile = backupFilePath(file, backupDir);
   copyFileSync(file, backupFile);
   chmodFileIfRequested(backupFile, mode);
   return backupFile;
 }
 
-function backupFiles(file: string): string[] {
-  const dir = path.dirname(file);
+function backupFiles(file: string, backupDir?: string): string[] {
+  const dir = backupBaseDir(file, backupDir);
   const prefix = `${path.basename(file)}.ccr-backup-`;
   try {
     return readdirSync(dir)
@@ -3543,9 +3558,15 @@ function backupFiles(file: string): string[] {
   }
 }
 
-function ensureOriginalSnapshot(file: string, previous: string | undefined, mode: number | undefined): void {
-  const originalBackup = originalBackupFilePath(file);
-  const originalMissing = originalMissingFilePath(file);
+function ensureOriginalSnapshot(
+  file: string,
+  previous: string | undefined,
+  mode: number | undefined,
+  backupDir?: string
+): void {
+  mkdirSync(backupBaseDir(file, backupDir), { recursive: true });
+  const originalBackup = originalBackupFilePath(file, backupDir);
+  const originalMissing = originalMissingFilePath(file, backupDir);
   if (existsSync(originalBackup) || existsSync(originalMissing)) {
     return;
   }
@@ -3569,17 +3590,21 @@ function chmodFileIfRequested(file: string, mode: number | undefined): void {
   }
 }
 
-function backupFilePath(file: string): string {
+function backupBaseDir(file: string, backupDir: string | undefined): string {
+  return backupDir ?? path.dirname(file);
+}
+
+function backupFilePath(file: string, backupDir?: string): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return `${file}.ccr-backup-${timestamp}`;
+  return path.join(backupBaseDir(file, backupDir), `${path.basename(file)}.ccr-backup-${timestamp}`);
 }
 
-function originalBackupFilePath(file: string): string {
-  return `${file}${originalBackupSuffix}`;
+function originalBackupFilePath(file: string, backupDir?: string): string {
+  return path.join(backupBaseDir(file, backupDir), `${path.basename(file)}${originalBackupSuffix}`);
 }
 
-function originalMissingFilePath(file: string): string {
-  return `${file}${originalMissingSuffix}`;
+function originalMissingFilePath(file: string, backupDir?: string): string {
+  return path.join(backupBaseDir(file, backupDir), `${path.basename(file)}${originalMissingSuffix}`);
 }
 
 function disabledStatus(client: ProfileClientKind, file: string, message: string): ProfileClientApplyStatus {

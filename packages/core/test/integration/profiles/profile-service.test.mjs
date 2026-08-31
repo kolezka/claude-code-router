@@ -2209,3 +2209,56 @@ test("custom Codex config directory receives generated files without replacing u
     rmSync(legacyConfigDir, { force: true, recursive: true });
   }
 });
+
+test("custom config directory backups are written outside that directory", { skip: !process.env.CCR_INTERNAL_HOME_DIR }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-custom-dir-backups-"));
+  const customDir = path.join(root, "dotfiles", ".claude");
+  const settingsFile = path.join(customDir, "settings.json");
+  try {
+    mkdirSync(customDir, { recursive: true });
+    writeFileSync(settingsFile, `${JSON.stringify({ env: { USER_VALUE: "kept" } }, null, 2)}\n`);
+
+    const profile = {
+      agent: "claude-code",
+      configDir: customDir,
+      enabled: true,
+      id: "inkitt-claude",
+      model: "Provider/model",
+      name: "Inkitt Claude",
+      scope: "custom",
+      surface: "auto"
+    };
+
+    const config = createDefaultAppConfig();
+    config.APIKEY = "ccr-custom-backup-test";
+    config.APIKEYS = [{
+      createdAt: "2026-01-01T00:00:00.000Z",
+      id: `profile:${profile.id}`,
+      key: "ccr-custom-backup-test",
+      name: "Profile: Claude Code"
+    }];
+    config.Providers = [{
+      api_base_url: "https://example.test/v1",
+      api_key: "provider-key",
+      models: ["model"],
+      name: "Provider"
+    }];
+    config.profile.profiles = [profile];
+
+    await applyProfileConfig(config);
+    // A second apply with a different model forces a changed write, hence a backup.
+    config.profile.profiles = [{ ...profile, model: "Provider/other" }];
+    config.Providers[0].models = ["model", "other"];
+    await applyProfileConfig(config);
+
+    const strayBackups = readdirSync(customDir)
+      .filter((entry) => entry.includes(".ccr-backup-") || entry.endsWith(".ccr-original"));
+    assert.deepEqual(strayBackups, []);
+
+    const backupDir = path.join(CONFIGDIR, "profiles", "inkitt-claude", "backups");
+    assert.equal(existsSync(backupDir), true);
+    assert.equal(readdirSync(backupDir).some((entry) => entry.includes("settings.json")), true);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
