@@ -2363,7 +2363,9 @@ function codexMiddlewareShellScript(
   runtimeFile: string
 ): string {
   const codexCli = profile.codexCliPath?.trim() || defaultCodexCliCommand(profile.agent);
-  const codexHome = profile.codexHome?.trim() || defaultCodexCompatibleHome(profile.agent, values.configFile);
+  const codexHome = resolveProfileConfigDir(profile)
+    ? path.dirname(values.configFile)
+    : profile.codexHome?.trim() || defaultCodexCompatibleHome(profile.agent, values.configFile);
   const resolvedCodexHome = resolveUserPath(codexHome);
   const remoteFrontendMode = normalizeCodexRemoteFrontendMode(profile.remoteFrontendMode);
   const surface = profile.agent === "workbuddy" || profile.agent === "zcode" ? "app" : normalizeProfileSurface(profile.surface);
@@ -2510,7 +2512,9 @@ function codexMiddlewareCmdScript(
   runtimeFile: string
 ): string {
   const codexCli = profile.codexCliPath?.trim() || defaultCodexCliCommand(profile.agent);
-  const codexHome = profile.codexHome?.trim() || defaultCodexCompatibleHome(profile.agent, values.configFile);
+  const codexHome = resolveProfileConfigDir(profile)
+    ? path.dirname(values.configFile)
+    : profile.codexHome?.trim() || defaultCodexCompatibleHome(profile.agent, values.configFile);
   const resolvedCodexHome = resolveUserPath(codexHome);
   const remoteFrontendMode = normalizeCodexRemoteFrontendMode(profile.remoteFrontendMode);
   const surface = profile.agent === "workbuddy" || profile.agent === "zcode" ? "app" : normalizeProfileSurface(profile.surface);

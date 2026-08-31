@@ -2115,6 +2115,63 @@ test("custom Codex config directory writes config.toml and preserves user TOML c
   }
 });
 
+test("custom Codex middleware exports configDir despite a conflicting codexHome", { skip: !process.env.CCR_INTERNAL_HOME_DIR }, async () => {
+  const profileId = "custom-codex-conflicting-home";
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-custom-codex-conflicting-home-"));
+  const configDir = path.join(root, "new-codex-home");
+  const staleCodexHome = path.join(root, "old-codex-home");
+  try {
+    const profile = {
+      agent: "codex",
+      cliMiddleware: true,
+      codexCliPath: "",
+      codexHome: staleCodexHome,
+      configDir,
+      configFile: "",
+      configFormat: "separate_profile_files",
+      enabled: true,
+      env: {},
+      id: profileId,
+      model: "Provider/model",
+      name: "Custom Codex Conflicting Home",
+      providerId: "claude-code-router",
+      providerName: "Claude Code Router",
+      scope: "custom",
+      showAllSessions: false,
+      surface: "auto"
+    };
+    const config = createDefaultAppConfig();
+    config.APIKEY = "ccr-custom-codex-conflicting-home-test";
+    config.APIKEYS = [{
+      createdAt: "2026-01-01T00:00:00.000Z",
+      id: `profile:${profile.id}`,
+      key: config.APIKEY,
+      name: "Profile: Custom Codex Conflicting Home"
+    }];
+    config.Providers = [{
+      api_base_url: "https://example.test/v1",
+      api_key: "provider-key",
+      models: ["model"],
+      name: "Provider"
+    }];
+    config.profile.profiles = [profile];
+
+    const result = await applyProfileConfig(config);
+    assert.equal(result.clients.find((client) => client.client === "codex")?.ok, true);
+
+    const extension = process.platform === "win32" ? ".cmd" : "";
+    const launcher = readFileSync(path.join(CONFIGDIR, "bin", `ccr-codex-cli-stdio-${profileId}${extension}`), "utf8");
+    const expectedExport = process.platform === "win32"
+      ? `set "CODEX_HOME=${configDir}"`
+      : `export CODEX_HOME='${configDir}'`;
+    assert.ok(launcher.includes(expectedExport), `Expected launcher to contain ${expectedExport}`);
+    assert.equal(launcher.includes(staleCodexHome), false);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+    rmSync(path.join(CONFIGDIR, "profiles", profileId), { force: true, recursive: true });
+  }
+});
+
 test("a custom config directory that does not exist yet is created", { skip: !process.env.CCR_INTERNAL_HOME_DIR }, async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "ccr-custom-dir-create-"));
   // Deliberately NOT created up front - the spec says CCR creates it.
