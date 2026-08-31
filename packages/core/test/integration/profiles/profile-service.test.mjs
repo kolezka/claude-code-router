@@ -9,6 +9,7 @@ import { createDefaultAppConfig } from "@ccr/core/config/default-config.ts";
 import { replacePersistedAppConfig } from "@ccr/core/config/config-repository.ts";
 import { CONFIGDIR } from "@ccr/core/config/constants.ts";
 import { applyProfileConfig, cleanupGeneratedBinBackups, resolveGrokSourceHome, resolveKimiSourceHome, restoreInactiveGlobalProfileConfigs, restoreGlobalProfileConfigsOnExit } from "@ccr/core/profiles/service.ts";
+import { resolveClaudeCodeSettingsFile, resolveProfileConfigDir } from "@ccr/core/profiles/launch-core.ts";
 
 test("Grok profile source home follows profile and process environment overrides", () => {
   const previous = {
@@ -1980,4 +1981,106 @@ test("profile config parsing keeps configDir for claude-code and codex profiles"
   assert.equal(byId["inkitt-claude"].scope, "custom");
   assert.equal(byId["inkitt-codex"].configDir, "~/Development/inkitt/.codex");
   assert.equal(byId["blank-dir"].configDir, undefined);
+});
+
+test("custom config directory receives the merged settings file", { skip: !process.env.CCR_INTERNAL_HOME_DIR }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-custom-config-dir-"));
+  const customDir = path.join(root, "dotfiles", ".claude");
+  const settingsFile = path.join(customDir, "settings.json");
+  try {
+    mkdirSync(customDir, { recursive: true });
+    writeFileSync(settingsFile, `${JSON.stringify({
+      env: { USER_VALUE: "kept" },
+      statusLine: { command: "ccstatusline", type: "command" }
+    }, null, 2)}\n`);
+
+    const profile = {
+      agent: "claude-code",
+      configDir: customDir,
+      enabled: true,
+      id: "inkitt-claude",
+      model: "Provider/model",
+      name: "Inkitt Claude",
+      scope: "custom",
+      surface: "auto"
+    };
+
+    const config = createDefaultAppConfig();
+    config.APIKEY = "ccr-custom-dir-test";
+    config.APIKEYS = [{
+      createdAt: "2026-01-01T00:00:00.000Z",
+      id: `profile:${profile.id}`,
+      key: "ccr-custom-dir-test",
+      name: "Profile: Claude Code"
+    }];
+    config.Providers = [{
+      api_base_url: "https://example.test/v1",
+      api_key: "provider-key",
+      models: ["model"],
+      name: "Provider"
+    }];
+    config.profile.profiles = [profile];
+
+    const result = await applyProfileConfig(config);
+    const claudeStatus = result.clients.find((client) => client.client === "claude-code");
+    assert.equal(claudeStatus.ok, true);
+
+    // The apply layer and the launch layer must agree on the path.
+    assert.equal(claudeStatus.path, settingsFile);
+    assert.equal(resolveClaudeCodeSettingsFile(CONFIGDIR, profile), settingsFile);
+    assert.equal(resolveProfileConfigDir(profile), customDir);
+
+    // The user's own keys survive the merge.
+    const current = JSON.parse(readFileSync(settingsFile, "utf8"));
+    assert.deepEqual(current.statusLine, { command: "ccstatusline", type: "command" });
+    assert.equal(current.env.USER_VALUE, "kept");
+    assert.equal(current.env.ANTHROPIC_MODEL, "Provider/model");
+
+    // Nothing was written into the legacy nested location.
+    assert.equal(existsSync(path.join(CONFIGDIR, "profiles", "inkitt-claude", "custom")), false);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("a custom config directory that does not exist yet is created", { skip: !process.env.CCR_INTERNAL_HOME_DIR }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-custom-dir-create-"));
+  // Deliberately NOT created up front - the spec says CCR creates it.
+  const customDir = path.join(root, "not", "there", "yet", ".claude");
+  try {
+    const profile = {
+      agent: "claude-code",
+      configDir: customDir,
+      enabled: true,
+      id: "fresh-claude",
+      model: "Provider/model",
+      name: "Fresh Claude",
+      scope: "custom",
+      surface: "auto"
+    };
+
+    const config = createDefaultAppConfig();
+    config.APIKEY = "ccr-custom-dir-create-test";
+    config.APIKEYS = [{
+      createdAt: "2026-01-01T00:00:00.000Z",
+      id: `profile:${profile.id}`,
+      key: "ccr-custom-dir-create-test",
+      name: "Profile: Claude Code"
+    }];
+    config.Providers = [{
+      api_base_url: "https://example.test/v1",
+      api_key: "provider-key",
+      models: ["model"],
+      name: "Provider"
+    }];
+    config.profile.profiles = [profile];
+
+    await applyProfileConfig(config);
+
+    assert.equal(existsSync(path.join(customDir, "settings.json")), true);
+    const created = JSON.parse(readFileSync(path.join(customDir, "settings.json"), "utf8"));
+    assert.equal(created.env.ANTHROPIC_MODEL, "Provider/model");
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
 });

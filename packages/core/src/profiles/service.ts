@@ -40,6 +40,7 @@ import {
 import { CONFIGDIR } from "@ccr/core/config/constants";
 import { pruneInactiveProfileApiKeysFromList, syncProfileApiKeys } from "@ccr/core/profiles/api-key";
 import { profileAllowedModels } from "@ccr/core/profiles/model-allowlist";
+import { resolveProfileConfigDir } from "@ccr/core/profiles/launch-core";
 import { refreshClaudeAppModelDiscoveryCache } from "@ccr/core/agents/claude-app/gateway-service";
 import { resolveClaudeAppProfileUserDataDir } from "@ccr/core/agents/claude-app/launch";
 import { resolveZcodeConfigFile, writeZcodeGatewayConfig, zcodeHomeFromConfigFile } from "@ccr/core/agents/zcode/profile-config";
@@ -882,6 +883,10 @@ function profilePath(profile: ProfileConfig): string {
 }
 
 function resolveClaudeCodeSettingsFile(profile: ProfileConfig): string {
+  const customDir = resolveProfileConfigDir(profile);
+  if (customDir) {
+    return path.join(customDir, "settings.json");
+  }
   if (isGeneratedProfileScope(profile.scope)) {
     return path.join(ccrManagedProfileDir(profile), "claude", "settings.json");
   }
@@ -996,6 +1001,10 @@ function ensureToolHubMcpRuntimeFile(file: string): { changed: boolean } {
 function resolveCodexConfigFile(profile: ProfileConfig): string {
   if (profile.agent === "zcode") {
     return resolveZcodeConfigFile(profile);
+  }
+  const customDir = resolveProfileConfigDir(profile);
+  if (customDir) {
+    return path.join(customDir, "config.toml");
   }
   if (isGeneratedProfileScope(profile.scope)) {
     return path.join(ccrManagedProfileDir(profile), codexConfigSubdir(profile.agent), "config.toml");
