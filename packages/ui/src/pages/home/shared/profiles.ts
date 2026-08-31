@@ -641,7 +641,9 @@ export function profileConfigDirFormatError(draft: AddProfileDraft): string | un
   if (!value) {
     return "Configuration directory is required for a custom config path.";
   }
-  if (value !== "~" && !value.startsWith("~/") && !value.startsWith("/")) {
+  const homeRooted = value === "~" || value.startsWith("~/") || value.startsWith("~\\");
+  const absolute = value.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("\\\\");
+  if (!homeRooted && !absolute) {
     return "Configuration directory must be an absolute path or start with ~/.";
   }
   return undefined;

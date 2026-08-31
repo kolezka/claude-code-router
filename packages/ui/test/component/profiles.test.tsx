@@ -959,6 +959,26 @@ test("a blank or relative custom config directory is rejected", () => {
   assert.equal(profileConfigDirFormatError({ ...createProfileDraft("claude-code"), configDir: "  ", scope: "ccr" }), undefined);
 });
 
+test("Windows custom configuration directory forms are accepted", () => {
+  for (const configDir of [
+    "C:\\Users\\me\\.codex",
+    "C:/Users/me/.codex",
+    "\\\\server\\share\\.codex",
+    "~\\Development\\inkitt\\.codex"
+  ]) {
+    assert.equal(
+      profileConfigDirFormatError({ ...createProfileDraft("codex"), configDir, scope: "custom" }),
+      undefined,
+      configDir
+    );
+  }
+
+  assert.equal(
+    Boolean(profileConfigDirFormatError({ ...createProfileDraft("codex"), configDir: "relative/path", scope: "custom" })),
+    true
+  );
+});
+
 test("onboarding can replace its enabled custom profile without a configuration directory collision", () => {
   const existing: ProfileConfig = {
     agent: "claude-code",
