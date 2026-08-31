@@ -2084,3 +2084,128 @@ test("a custom config directory that does not exist yet is created", { skip: !pr
     rmSync(root, { force: true, recursive: true });
   }
 });
+
+test("profile service preserves custom Claude Code configuration when no gateway models are available", { skip: !process.env.CCR_INTERNAL_HOME_DIR }, async () => {
+  const profileId = "custom-toolhub-no-models";
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-custom-toolhub-no-models-"));
+  const customDir = path.join(root, ".claude");
+  const settingsFile = path.join(customDir, "settings.json");
+  const toolHubMcpConfigFile = path.join(CONFIGDIR, "profiles", profileId, "custom", "claude", "toolhub-mcp.json");
+  const settingsContent = [
+    "{",
+    '  "env": {',
+    `    "CCR_CLAUDE_CODE_MCP_CONFIG": ${JSON.stringify(toolHubMcpConfigFile)},`,
+    '    "CODEXL_CLAUDE_CODE_MCP_CONFIG": "legacy-toolhub-config",',
+    '    "USER_VALUE": "kept"',
+    "  },",
+    '  "theme": "dark"',
+    "}",
+    ""
+  ].join("\n");
+  const toolHubMcpContent = '{"mcpServers":{"ccr-toolhub":{}}}\n';
+  try {
+    rmSync(path.dirname(toolHubMcpConfigFile), { force: true, recursive: true });
+    mkdirSync(customDir, { recursive: true });
+    mkdirSync(path.dirname(toolHubMcpConfigFile), { recursive: true });
+    writeFileSync(settingsFile, settingsContent);
+    writeFileSync(toolHubMcpConfigFile, toolHubMcpContent);
+
+    const config = createDefaultAppConfig();
+    config.Providers = [];
+    config.virtualModelProfiles = [];
+    config.profile.profiles = [{
+      agent: "claude-code",
+      configDir: customDir,
+      enabled: true,
+      env: {},
+      id: profileId,
+      model: "",
+      name: "Custom Claude Code",
+      scope: "custom",
+      surface: "auto"
+    }];
+
+    const result = await applyProfileConfig(config);
+    assert.equal(result.clients[0]?.ok, false);
+    assert.equal(readFileSync(settingsFile, "utf8"), settingsContent);
+    assert.equal(existsSync(`${settingsFile}.ccr-original`), false);
+    assert.equal(readFileSync(toolHubMcpConfigFile, "utf8"), toolHubMcpContent);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+    rmSync(path.join(CONFIGDIR, "profiles", profileId), { force: true, recursive: true });
+  }
+});
+
+test("custom Codex config directory receives generated files without replacing user TOML tables", { skip: !process.env.CCR_INTERNAL_HOME_DIR }, async () => {
+  const profileId = "custom-codex-config-dir";
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccr-custom-codex-config-dir-"));
+  const customDir = path.join(root, ".codex");
+  const configFile = path.join(customDir, "config.toml");
+  const legacyConfigDir = path.join(CONFIGDIR, "profiles", profileId, "custom", "codex");
+  try {
+    rmSync(legacyConfigDir, { force: true, recursive: true });
+    mkdirSync(customDir, { recursive: true });
+    writeFileSync(configFile, [
+      'model_reasoning_effort = "max"',
+      "",
+      "[features]",
+      "js_repl = true",
+      "",
+      '[plugins."browser@openai-bundled"]',
+      "enabled = false",
+      ""
+    ].join("\n"));
+
+    const profile = {
+      agent: "codex",
+      cliMiddleware: false,
+      codexCliPath: "",
+      codexHome: "",
+      configDir: customDir,
+      configFile: "",
+      enabled: true,
+      env: {},
+      id: profileId,
+      model: "Provider/model",
+      name: "Custom Codex",
+      providerId: "claude-code-router",
+      providerName: "Claude Code Router",
+      scope: "custom",
+      showAllSessions: false,
+      surface: "auto"
+    };
+    const config = createDefaultAppConfig();
+    config.APIKEY = "ccr-custom-codex-test";
+    config.APIKEYS = [{
+      createdAt: "2026-01-01T00:00:00.000Z",
+      id: `profile:${profile.id}`,
+      key: "ccr-custom-codex-test",
+      name: "Profile: Custom Codex"
+    }];
+    config.Providers = [{
+      api_base_url: "https://example.test/v1",
+      api_key: "provider-key",
+      models: ["model"],
+      name: "Provider"
+    }];
+    config.profile.profiles = [profile];
+
+    const result = await applyProfileConfig(config);
+    const codexStatus = result.clients.find((client) => client.client === "codex");
+    assert.equal(codexStatus?.ok, true);
+    assert.equal(codexStatus?.path, configFile);
+
+    const current = readFileSync(configFile, "utf8");
+    assert.match(current, /model_reasoning_effort = "max"/);
+    assert.match(current, /\[features\]\njs_repl = true/);
+    assert.match(current, /\[plugins\."browser@openai-bundled"\]\nenabled = false/);
+    assert.equal(existsSync(path.join(customDir, "ccr-model-catalog.json")), true);
+    assert.equal(existsSync(path.join(customDir, "claude-code-router.config.toml")), true);
+    assert.equal(existsSync(path.join(legacyConfigDir, "config.toml")), false);
+    assert.equal(existsSync(path.join(legacyConfigDir, "ccr-model-catalog.json")), false);
+    assert.equal(existsSync(path.join(legacyConfigDir, "claude-code-router.config.toml")), false);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+    rmSync(legacyConfigDir, { force: true, recursive: true });
+  }
+});

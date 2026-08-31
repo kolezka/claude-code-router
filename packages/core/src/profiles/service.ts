@@ -227,6 +227,11 @@ function cleanupManagedClaudeCodeToolHubArtifacts(
   const activeToolHubFiles = new Set(profiles
     .filter((profile) => profile.agent === "claude-code")
     .map((profile) => normalizedFileKey(claudeCodeToolHubMcpConfigFile(profile))));
+  const customConfigToolHubFiles = options.includeActive
+    ? new Set(profiles
+      .filter((profile) => profile.agent === "claude-code" && resolveProfileConfigDir(profile))
+      .map((profile) => normalizedFileKey(claudeCodeToolHubMcpConfigFile(profile))))
+    : new Set<string>();
   const activeGeneratedSettingsFiles = new Set(profiles
     .filter((profile) => profile.agent === "claude-code" && isGeneratedProfileScope(profile.scope))
     .map((profile) => normalizedFileKey(resolveClaudeCodeSettingsFile(profile))));
@@ -234,6 +239,9 @@ function cleanupManagedClaudeCodeToolHubArtifacts(
   let changed = false;
 
   for (const file of managedClaudeCodeToolHubMcpConfigFiles()) {
+    if (customConfigToolHubFiles.has(normalizedFileKey(file))) {
+      continue;
+    }
     if (!options.includeActive && activeToolHubFiles.has(normalizedFileKey(file))) {
       continue;
     }
@@ -325,6 +333,9 @@ function deleteClaudeCodeToolHubEnv(env: Record<string, unknown>): boolean {
 }
 
 function cleanupClaudeCodeToolHubArtifacts(profile: ProfileConfig): { changed?: boolean; message?: string; ok: boolean } {
+  if (resolveProfileConfigDir(profile)) {
+    return { ok: true };
+  }
   try {
     let changed = false;
     const mcpConfigFile = claudeCodeToolHubMcpConfigFile(profile);
