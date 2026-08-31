@@ -2128,7 +2128,7 @@ test("profile service preserves custom Claude Code configuration when no gateway
     const result = await applyProfileConfig(config);
     assert.equal(result.clients[0]?.ok, false);
     assert.equal(readFileSync(settingsFile, "utf8"), settingsContent);
-    assert.equal(existsSync(`${settingsFile}.ccr-original`), false);
+    assert.deepEqual(readdirSync(customDir).sort(), ["settings.json"]);
     assert.equal(readFileSync(toolHubMcpConfigFile, "utf8"), toolHubMcpContent);
   } finally {
     rmSync(root, { force: true, recursive: true });
