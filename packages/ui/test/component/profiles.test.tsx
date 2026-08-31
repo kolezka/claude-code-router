@@ -6,7 +6,7 @@ import type { ProfileConfig } from "@ccr/core/contracts/app.ts";
 import { AddProfileForm, DeleteProfileDialog, ProfileView } from "@ccr/ui/pages/home/components/profiles.tsx";
 import { normalizeConfig } from "@ccr/ui/pages/home/shared/config.ts";
 import { AppI18nContext, appCopy } from "@ccr/ui/pages/home/shared/i18n.tsx";
-import { createProfileDraft, createProfileDraftFromProfile, isProfileDraftSubmittable, normalizeUnknownProfileItem, profileAgentLogoUrl, profileConfigFromDraft, profileDraftWithDetectedAppPath, profileSummaryItems } from "@ccr/ui/pages/home/shared/profiles.ts";
+import { createProfileDraft, createProfileDraftFromProfile, isProfileDraftSubmittable, normalizeUnknownProfileItem, profileAgentLogoUrl, profileConfigDirFormatError, profileConfigFromDraft, profileDraftWithDetectedAppPath, profileSummaryItems } from "@ccr/ui/pages/home/shared/profiles.ts";
 import { profileScopeOptions } from "../../src/pages/home/shared/options.ts";
 import { appConfigFixture } from "../fixtures/index.ts";
 
@@ -867,4 +867,41 @@ test("custom scope preserves configDir for Codex", () => {
 
   const roundTripped = profileConfigFromDraft(createProfileDraftFromProfile(profile), [profile], profile);
   assert.equal(roundTripped.configDir, "~/.codex-work");
+});
+
+test("the configuration directory field appears only for custom scope", () => {
+  const config = appConfigFixture();
+  const customHtml = renderToStaticMarkup(
+    <AddProfileForm
+      botConfigs={config.botConfigs}
+      draft={{ ...createProfileDraft("claude-code"), configDir: "~/Development/inkitt/.claude", scope: "custom" }}
+      error=""
+      onChange={() => undefined}
+      onCreateBot={() => undefined}
+      providers={config.Providers}
+    />
+  );
+  assert.match(customHtml, /Configuration directory/);
+  assert.match(customHtml, /~\/Development\/inkitt\/\.claude/);
+
+  const ccrHtml = renderToStaticMarkup(
+    <AddProfileForm
+      botConfigs={config.botConfigs}
+      draft={{ ...createProfileDraft("claude-code"), scope: "ccr" }}
+      error=""
+      onChange={() => undefined}
+      onCreateBot={() => undefined}
+      providers={config.Providers}
+    />
+  );
+  assert.equal(/Configuration directory/.test(ccrHtml), false);
+});
+
+test("a blank or relative custom config directory is rejected", () => {
+  assert.equal(Boolean(profileConfigDirFormatError({ ...createProfileDraft("claude-code"), configDir: "  ", scope: "custom" })), true);
+  assert.equal(Boolean(profileConfigDirFormatError({ ...createProfileDraft("claude-code"), configDir: "relative/path", scope: "custom" })), true);
+  assert.equal(profileConfigDirFormatError({ ...createProfileDraft("claude-code"), configDir: "~/Development/inkitt/.claude", scope: "custom" }), undefined);
+  assert.equal(profileConfigDirFormatError({ ...createProfileDraft("claude-code"), configDir: "/abs/path", scope: "custom" }), undefined);
+  // Not applicable outside custom scope.
+  assert.equal(profileConfigDirFormatError({ ...createProfileDraft("claude-code"), configDir: "  ", scope: "ccr" }), undefined);
 });

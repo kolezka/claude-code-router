@@ -577,11 +577,28 @@ export function createProfileDraftFromProfile(profile: ProfileConfig, botConfigs
   };
 }
 
+export function profileConfigDirFormatError(draft: AddProfileDraft): string | undefined {
+  if (draft.scope !== "custom" || (draft.agent !== "claude-code" && draft.agent !== "codex")) {
+    return undefined;
+  }
+  const value = draft.configDir.trim();
+  if (!value) {
+    return "Configuration directory is required for a custom config path.";
+  }
+  if (value !== "~" && !value.startsWith("~/") && !value.startsWith("/")) {
+    return "Configuration directory must be an absolute path or start with ~/.";
+  }
+  return undefined;
+}
+
 export function isProfileDraftSubmittable(draft: AddProfileDraft): boolean {
   if (!draft.name.trim()) {
     return false;
   }
   if (!validateProfileEnvRows(draft.envRows)) {
+    return false;
+  }
+  if (profileConfigDirFormatError(draft)) {
     return false;
   }
   const botAllowed = draft.surface !== "cli";
