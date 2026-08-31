@@ -151,7 +151,8 @@ export function profileAgentOptionsForRuntime(desktop: boolean): ProfileAgentOpt
 
 export const profileScopeOptions: Array<{ label: string; value: ProfileScope }> = [
   { label: "Only opened from CCR", value: "ccr" },
-  { label: "System default", value: "global" }
+  { label: "System default", value: "global" },
+  { label: "Custom config path", value: "custom" }
 ];
 
 export const profileSurfaceOptions: Array<{ label: string; value: ProfileSurface }> = [

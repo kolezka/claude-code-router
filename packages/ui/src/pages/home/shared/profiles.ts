@@ -467,6 +467,7 @@ export function createProfileDraft(agent: ProfileConfig["agent"] = "claude-code"
     availableModels: [],
     ...createBotGatewayDraft(),
     configFile: defaultCodexConfigFile(agent),
+    configDir: "",
     envRows: agent === "claude-code" ? keyValueRowsFromRecord(claudeCodeProfileEnv()) : [],
     fableModel: "",
     haikuModel: "",
@@ -518,6 +519,7 @@ export function createProfileDraftFromProfile(profile: ProfileConfig, botConfigs
       appPath: profile.appPath ?? "",
       botConfigId,
       botEnabled: surface !== "cli" && Boolean(selectedBot || profile.botGateway?.enabled),
+      configDir: profile.configDir ?? "",
       envRows: keyValueRowsFromRecord(claudeCodeProfileEnv(profile.env ?? {})),
       availableModels: profileDraftAvailableModels(profile),
       fableModel: profile.fableModel ?? "",
@@ -562,6 +564,7 @@ export function createProfileDraftFromProfile(profile: ProfileConfig, botConfigs
     availableModels: profileDraftAvailableModels(profile),
     botConfigId,
     botEnabled: surface !== "cli" && Boolean(selectedBot || profile.botGateway?.enabled),
+    configDir: profile.configDir ?? "",
     configFile: profile.configFile ?? defaultCodexConfigFile(profile.agent),
     envRows: keyValueRowsFromRecord(codexCompatibleProfileEnv(profile.env ?? {})),
     managedCompact: Boolean(profile.managedCompact),
@@ -649,6 +652,7 @@ export function profileConfigFromDraft(
     availableModels: profileConfigAvailableModelsFromDraft(draft),
     ...botGateway,
     configFile: draft.configFile,
+    configDir: draft.configDir,
     enabled: existingProfile?.enabled ?? true,
     env: draft.agent === "claude-code"
       ? recordFromKeyValueRows(draft.envRows)
@@ -960,8 +964,7 @@ export function normalizeProfileScope(value: unknown): ProfileScope {
 }
 
 export function normalizeProfileFormScope(value: unknown): ProfileScope {
-  const scope = normalizeProfileScope(value);
-  return scope === "custom" ? "ccr" : scope;
+  return normalizeProfileScope(value);
 }
 
 export function normalizeProfileSurface(value: unknown): ProfileSurface {
@@ -1318,6 +1321,7 @@ export function normalizeProfileItem(profile: ProfileConfig, index: number): Pro
       ...(surface !== "cli" && appPath ? { appPath } : {}),
       ...(botConfigId ? { botConfigId } : {}),
       ...(botGateway ? { botGateway } : {}),
+      ...(scope === "custom" && profile.configDir?.trim() ? { configDir: profile.configDir.trim() } : {}),
       ...(availableModels ? { availableModels } : {}),
       enabled: profile.enabled,
       env: claudeCodeProfileEnv(env),
@@ -1368,6 +1372,7 @@ export function normalizeProfileItem(profile: ProfileConfig, index: number): Pro
     ...(surface !== "cli" && agent !== "zcode" && profile.appPath?.trim() ? { appPath: profile.appPath.trim() } : {}),
     ...(botConfigId ? { botConfigId } : {}),
     ...(botGateway ? { botGateway } : {}),
+    ...(agent === "codex" && scope === "custom" && profile.configDir?.trim() ? { configDir: profile.configDir.trim() } : {}),
     ...(availableModels ? { availableModels } : {}),
     cliMiddleware: true,
     codexCliPath: "",

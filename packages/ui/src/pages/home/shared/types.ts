@@ -187,6 +187,7 @@ export type AddProfileDraft = {
   botHandoffPhoneWifiTargets: string;
   botPlatform: string;
   configFile: string;
+  configDir: string;
   envRows: KeyValueDraftRow[];
   fableModel: string;
   haikuModel: string;

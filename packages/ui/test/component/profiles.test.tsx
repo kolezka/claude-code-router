@@ -6,6 +6,7 @@ import type { ProfileConfig } from "@ccr/core/contracts/app.ts";
 import { AddProfileForm, DeleteProfileDialog, ProfileView } from "@ccr/ui/pages/home/components/profiles.tsx";
 import { AppI18nContext, appCopy } from "@ccr/ui/pages/home/shared/i18n.tsx";
 import { createProfileDraft, createProfileDraftFromProfile, isProfileDraftSubmittable, normalizeUnknownProfileItem, profileAgentLogoUrl, profileConfigFromDraft, profileDraftWithDetectedAppPath, profileSummaryItems } from "@ccr/ui/pages/home/shared/profiles.ts";
+import { profileScopeOptions } from "../../src/pages/home/shared/options.ts";
 import { appConfigFixture } from "../fixtures/index.ts";
 
 const profile: ProfileConfig = {
@@ -782,4 +783,60 @@ test("Workbuddy profiles support local App configuration", () => {
   assert.equal(profile?.surface, "app");
   assert.match(profileAgentLogoUrl("workbuddy"), /workbuddy/i);
   assert.notEqual(profileAgentLogoUrl("workbuddy"), profileAgentLogoUrl("codex"));
+});
+
+test("custom scope survives an edit round-trip and carries configDir", () => {
+  const profile = {
+    agent: "claude-code" as const,
+    configDir: "~/Development/inkitt/.claude",
+    enabled: true,
+    id: "inkitt-claude",
+    model: "Provider/model",
+    name: "Inkitt Claude",
+    scope: "custom" as const
+  };
+
+  const draft = createProfileDraftFromProfile(profile);
+  assert.equal(draft.scope, "custom");
+  assert.equal(draft.configDir, "~/Development/inkitt/.claude");
+
+  const roundTripped = profileConfigFromDraft(draft, [profile], profile);
+  assert.equal(roundTripped.scope, "custom");
+  assert.equal(roundTripped.configDir, "~/Development/inkitt/.claude");
+});
+
+test("configDir is dropped when the scope is not custom", () => {
+  const draft = { ...createProfileDraft("claude-code"), configDir: "~/somewhere", scope: "ccr" as const };
+  const config = profileConfigFromDraft(draft, []);
+  assert.equal(config.configDir, undefined);
+});
+
+test("the custom scope option is offered", () => {
+  assert.equal(profileScopeOptions.some((option) => option.value === "custom"), true);
+});
+
+test("empty configDir preserves existing profile serialization", () => {
+  const config = profileConfigFromDraft(createProfileDraft("claude-code"), []);
+  assert.equal(Object.hasOwn(config, "configDir"), false);
+});
+
+test("configDir is dropped for unsupported custom-scope agents", () => {
+  const draft = { ...createProfileDraft("opencode"), configDir: "~/somewhere", scope: "custom" as const };
+  const config = profileConfigFromDraft(draft, []);
+  assert.equal(config.configDir, undefined);
+});
+
+test("custom scope preserves configDir for Codex", () => {
+  const profile = {
+    agent: "codex" as const,
+    configDir: "~/.codex-work",
+    enabled: true,
+    id: "codex-work",
+    model: "Provider/model",
+    name: "Codex Work",
+    scope: "custom" as const
+  };
+
+  const roundTripped = profileConfigFromDraft(createProfileDraftFromProfile(profile), [profile], profile);
+  assert.equal(roundTripped.configDir, "~/.codex-work");
 });
